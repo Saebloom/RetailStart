@@ -1,17 +1,17 @@
 # Manipulación y análisis de datos
-pandas==2.2.2
-numpy==1.26.4
- 
+pandas>=2.2.3
+numpy>=2.1.0
+
 # Conexión a PostgreSQL
-psycopg2-binary==2.9.9
-sqlalchemy==2.0.30
- 
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.30
+
 # Lectura de XML
-lxml==5.2.1
- 
+lxml>=5.2.1
+
 # Variables de entorno (credenciales BD)
-python-dotenv==1.0.1
- 
+python-dotenv>=1.0.1
+
 # Visualización
-matplotlib==3.8.4
-seaborn==0.13.2
+matplotlib>=3.8.4
+seaborn>=0.13.2

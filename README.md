@@ -95,7 +95,7 @@ Antes de comenzar asegúrate de tener instalado:
 
 ```bash
 git clone https://github.com/Saebloom/RetailStart.git
-cd RetailStart-DataPlatform
+cd RetailStart
 ```
 
 ### 2. Crear entorno virtual (recomendado)

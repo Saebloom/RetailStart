@@ -1,0 +1,6 @@
+id_llamada,id_cliente,fecha,motivo,duracion
+1,101,2026-04-01,Consulta,5
+2,102,2026-04-02,Reclamo,10
+3,103,2026-04-03,Soporte,7
+4,104,2026-04-04,Consulta,4
+5,105,2026-04-05,Reclamo,12

@@ -1,0 +1,12 @@
+[
+{"id_evento":1,"id_cliente":101,"tipo":"click","producto":2001},
+{"id_evento":2,"id_cliente":102,"tipo":"busqueda","producto":2002},
+{"id_evento":3,"id_cliente":103,"tipo":"click","producto":2003},
+{"id_evento":4,"id_cliente":104,"tipo":"compra","producto":2004},
+{"id_evento":5,"id_cliente":105,"tipo":"click","producto":2002},
+{"id_evento":6,"id_cliente":106,"tipo":"busqueda","producto":2005},
+{"id_evento":7,"id_cliente":107,"tipo":"click","producto":2003},
+{"id_evento":8,"id_cliente":108,"tipo":"compra","producto":2006},
+{"id_evento":9,"id_cliente":109,"tipo":"click","producto":2001},
+{"id_evento":10,"id_cliente":110,"tipo":"busqueda","producto":2004}
+]

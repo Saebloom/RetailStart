@@ -1,0 +1,6 @@
+id_pedido,id_cliente,estado
+1,101,Enviado
+2,102,Entregado
+3,103,Pendiente
+4,104,En tránsito
+5,105,Entregado

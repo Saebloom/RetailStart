@@ -4,32 +4,32 @@
 #  Etapa   : Carga al Data Warehouse (PostgreSQL)
 #            integrated/ → tablas dw.*
 # ============================================================
- 
+
 import os
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import execute_values
- 
+
 load_dotenv()
- 
+
 # ------------------------------------------------------------
 # Rutas base
 # ------------------------------------------------------------
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 INTEGRATED = os.path.join(BASE_DIR, "data", "processed", "integrated")
 TRANSFORMED = os.path.join(BASE_DIR, "data", "processed", "transformed")
- 
- 
+
+
 def _log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
- 
- 
+
+
 # ============================================================
 #  CONEXIÓN A POSTGRESQL
 # ============================================================
- 
+
 def conectar():
     conn = psycopg2.connect(
         host     = os.getenv("DB_HOST",     "localhost"),
@@ -41,16 +41,16 @@ def conectar():
     conn.autocommit = False
     _log("Conexión a PostgreSQL exitosa")
     return conn
- 
- 
+
+
 # ============================================================
 #  CARGA DE DIMENSIONES
 # ============================================================
- 
+
 def cargar_dim_cliente(conn):
     _log(">> Cargando dim_cliente...")
     df = pd.read_csv(os.path.join(TRANSFORMED, "clientes_crm_clean.csv"))
- 
+
     registros = [
         (
             int(row["id_cliente"]),
@@ -62,7 +62,7 @@ def cargar_dim_cliente(conn):
         )
         for _, row in df.iterrows()
     ]
- 
+
     sql = """
         INSERT INTO dw.dim_cliente
             (id_cliente, nombre, apellido, email, segmento, ciudad)
@@ -77,12 +77,12 @@ def cargar_dim_cliente(conn):
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
     _log(f"  {len(registros)} clientes cargados")
- 
- 
+
+
 def cargar_dim_producto(conn):
     _log(">> Cargando dim_producto...")
     df = pd.read_csv(os.path.join(TRANSFORMED, "productos_erp_clean.csv"))
- 
+
     registros = [
         (
             int(row["id_producto"]),
@@ -93,7 +93,7 @@ def cargar_dim_producto(conn):
         )
         for _, row in df.iterrows()
     ]
- 
+
     sql = """
         INSERT INTO dw.dim_producto
             (id_producto, nombre_producto, categoria, precio_base, proveedor)
@@ -107,20 +107,20 @@ def cargar_dim_producto(conn):
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
     _log(f"  {len(registros)} productos cargados")
- 
- 
+
+
 def cargar_dim_tiempo(conn):
     _log(">> Cargando dim_tiempo...")
     df = pd.read_csv(os.path.join(INTEGRATED, "ventas_consolidadas.csv"))
     df["fecha"] = pd.to_datetime(df["fecha"])
- 
+
     fechas_unicas = df["fecha"].dt.date.unique()
- 
+
     dias_semana = {
         0: "Lunes", 1: "Martes", 2: "Miércoles",
         3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"
     }
- 
+
     registros = []
     for fecha in fechas_unicas:
         dt = pd.Timestamp(fecha)
@@ -132,7 +132,7 @@ def cargar_dim_tiempo(conn):
             dias_semana[dt.dayofweek],
             dt.dayofweek >= 5
         ))
- 
+
     sql = """
         INSERT INTO dw.dim_tiempo
             (fecha, dia, mes, anio, dia_semana, es_finde)
@@ -142,78 +142,102 @@ def cargar_dim_tiempo(conn):
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
     _log(f"  {len(registros)} fechas cargadas")
- 
- 
+
+
 def cargar_dim_tienda(conn):
     _log(">> Cargando dim_tienda...")
- 
+
     # Tiendas desde ventas_pos
     df = pd.read_csv(os.path.join(TRANSFORMED, "ventas_pos_clean.csv"))
     tiendas = df["tienda"].dropna().unique()
- 
+
     sql = """
         INSERT INTO dw.dim_tienda (nombre_tienda, ciudad, region)
         VALUES %s
         ON CONFLICT DO NOTHING;
     """
     registros = [(t, t, "Metropolitana") for t in tiendas]
- 
+
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
     _log(f"  {len(registros)} tiendas verificadas")
- 
- 
+
+
 # ============================================================
 #  CARGA DE HECHOS
 # ============================================================
- 
+
 def obtener_id_tiempo(cur, fecha: str) -> int:
     cur.execute("SELECT id_tiempo FROM dw.dim_tiempo WHERE fecha = %s", (fecha,))
     row = cur.fetchone()
     return row[0] if row else None
- 
- 
+
+
 def obtener_id_canal(cur, tipo_canal: str) -> int:
     cur.execute("SELECT id_canal FROM dw.dim_canal WHERE tipo_canal = %s", (tipo_canal,))
     row = cur.fetchone()
     return row[0] if row else None
- 
- 
+
+
 def obtener_id_tienda(cur, nombre: str) -> int:
     if not nombre or str(nombre) == "nan":
         return None
     cur.execute("SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s", (str(nombre),))
     row = cur.fetchone()
     return row[0] if row else None
- 
- 
+
+
+def obtener_id_producto(cur, id_producto) -> int:
+    """Retorna el id_producto si existe en dim_producto, o None si no existe."""
+    if id_producto is None or pd.isna(id_producto):
+        return None
+    id_prod = int(id_producto)
+    cur.execute("SELECT id_producto FROM dw.dim_producto WHERE id_producto = %s", (id_prod,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 def cargar_fact_ventas(conn):
     _log(">> Cargando fact_ventas...")
     df = pd.read_csv(os.path.join(INTEGRATED, "ventas_enriquecidas.csv"))
     df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
- 
+
     registros = []
+    omitidos = 0
+
     with conn.cursor() as cur:
         for _, row in df.iterrows():
-            id_tiempo  = obtener_id_tiempo(cur, str(row["fecha"]))
-            id_canal   = obtener_id_canal(cur, str(row["canal"]))
-            id_tienda  = obtener_id_tienda(cur, row.get("tienda"))
- 
-            id_producto = None if pd.isna(row.get("id_producto")) else int(row["id_producto"])
- 
+            id_tiempo   = obtener_id_tiempo(cur, str(row["fecha"]))
+            id_canal    = obtener_id_canal(cur, str(row["canal"]))
+            id_tienda   = obtener_id_tienda(cur, row.get("tienda"))
+            id_producto = obtener_id_producto(cur, row.get("id_producto"))
+
+            # Omitir registros con referencias obligatorias faltantes
+            if id_tiempo is None or id_canal is None or id_producto is None:
+                omitidos += 1
+                _log(f"  [OMITIDO] fila id_venta={row.get('id_venta')} — "
+                     f"tiempo={'OK' if id_tiempo else 'FALTA'}, "
+                     f"canal={'OK' if id_canal else 'FALTA'}, "
+                     f"producto={'OK' if id_producto else 'FALTA'}")
+                continue
+
             registros.append((
                 id_tiempo,
                 int(row["id_cliente"]),
                 id_producto,
                 id_canal,
                 id_tienda,
-                int(row["cantidad"])       if not pd.isna(row["cantidad"])       else 1,
-                float(row["precio_unitario"]) if not pd.isna(row["precio_unitario"]) else 0.0,
+                int(row["cantidad"])          if not pd.isna(row["cantidad"])          else 1,
+                float(row["precio_unitario"]) if not pd.isna(row["precio_unitario"])   else 0.0,
                 float(row["total_venta"]),
                 str(row["fuente"]),
                 int(row["id_venta"])
             ))
- 
+
+    if not registros:
+        _log("  ADVERTENCIA: No hay registros válidos para cargar en fact_ventas")
+        return
+
     sql = """
         INSERT INTO dw.fact_ventas
             (id_tiempo_fk, id_cliente_fk, id_producto_fk, id_canal_fk,
@@ -223,20 +247,23 @@ def cargar_fact_ventas(conn):
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
+
     _log(f"  {len(registros)} registros cargados en fact_ventas")
- 
- 
+    if omitidos > 0:
+        _log(f"  {omitidos} registros omitidos por referencias faltantes en dimensiones")
+
+
 # ============================================================
 #  FUNCIÓN PRINCIPAL
 # ============================================================
- 
+
 def run():
     _log("=" * 50)
     _log("INICIO CARGA AL DATA WAREHOUSE")
     _log("=" * 50)
- 
+
     conn = conectar()
- 
+
     try:
         # Limpiar tablas antes de cargar (para evitar duplicados en re-ejecuciones)
         _log("")
@@ -248,7 +275,7 @@ def run():
             cur.execute("TRUNCATE dw.dim_tiempo RESTART IDENTITY CASCADE;")
             cur.execute("TRUNCATE dw.dim_tienda RESTART IDENTITY CASCADE;")
         _log("  Tablas limpiadas")
- 
+
         # Cargar dimensiones primero
         _log("")
         _log(">> CARGANDO DIMENSIONES:")
@@ -257,30 +284,30 @@ def run():
         cargar_dim_producto(conn)
         cargar_dim_tiempo(conn)
         cargar_dim_tienda(conn)
- 
+
         # Cargar hechos después
         _log("")
         _log(">> CARGANDO TABLA DE HECHOS:")
         _log("-" * 40)
         cargar_fact_ventas(conn)
- 
+
         # Confirmar transacción
         conn.commit()
         _log("")
         _log("=" * 50)
         _log("CARGA COMPLETA — Datos disponibles en PostgreSQL")
         _log("=" * 50)
- 
+
     except Exception as e:
         conn.rollback()
         _log(f"ERROR: {e}")
         raise
- 
+
     finally:
         conn.close()
         _log("Conexión cerrada")
- 
- 
+
+
 # ============================================================
 #  Ejecución directa
 # ============================================================

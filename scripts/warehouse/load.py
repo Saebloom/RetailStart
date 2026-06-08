@@ -1,315 +1,225 @@
-# ============================================================
-#  RetailStart Chile S.A. — Data Platform
-#  Archivo : scripts/warehouse/load.py
-#  Etapa   : Carga al Data Warehouse (PostgreSQL)
-#            integrated/ → tablas dw.*
-# ============================================================
-
 import os
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
-import psycopg2
-from psycopg2.extras import execute_values
 
-load_dotenv()
+load_dotenv(encoding="utf-8")
 
-# ------------------------------------------------------------
-# Rutas base
-# ------------------------------------------------------------
-BASE_DIR   = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-INTEGRATED = os.path.join(BASE_DIR, "data", "processed", "integrated")
+BASE_DIR    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TRANSFORMED = os.path.join(BASE_DIR, "data", "processed", "transformed")
+INTEGRATED  = os.path.join(BASE_DIR, "data", "processed", "integrated")
 
 
 def _log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
-# ============================================================
-#  CONEXIÓN A POSTGRESQL
-# ============================================================
-
-def conectar():
-    conn = psycopg2.connect(
-        host     = os.getenv("DB_HOST",     "localhost"),
-        port     = os.getenv("DB_PORT",     "5432"),
-        dbname   = os.getenv("DB_NAME",     "retailstart_dw"),
-        user     = os.getenv("DB_USER",     "postgres"),
-        password = os.getenv("DB_PASSWORD", "")
-    )
-    conn.autocommit = False
-    _log("Conexión a PostgreSQL exitosa")
-    return conn
+def cargar(nombre: str) -> pd.DataFrame | None:
+    ruta = os.path.join(TRANSFORMED, f"{nombre}_clean.csv")
+    if not os.path.isfile(ruta):
+        return None
+    return pd.read_csv(ruta)
 
 
-# ============================================================
-#  CARGA DE DIMENSIONES
-# ============================================================
+def guardar(df: pd.DataFrame, nombre: str):
+    os.makedirs(INTEGRATED, exist_ok=True)
+    ruta = os.path.join(INTEGRATED, nombre)
+    df.to_csv(ruta, index=False)
+    _log(f"  Guardado: {nombre} ({len(df)} filas)")
 
-def cargar_dim_cliente(conn):
-    _log(">> Cargando dim_cliente...")
-    df = pd.read_csv(os.path.join(TRANSFORMED, "clientes_crm_clean.csv"))
 
-    registros = [
-        (
-            int(row["id_cliente"]),
-            str(row["nombre"]),
-            str(row["apellido"]),
-            str(row["email"]),
-            str(row["segmento"]),
-            str(row["ciudad"])
+# ── Paso 1: Consolidar ventas ────────────────────────────────
+
+def consolidar_ventas() -> pd.DataFrame | None:
+    pos    = cargar("ventas_pos")
+    online = cargar("ventas_online")
+
+    if pos is None and online is None:
+        _log("  Sin datos de ventas disponibles — omitiendo consolidación")
+        return None
+
+    partes = []
+
+    if pos is not None:
+        pos_std = pos[["id_venta", "fecha", "id_cliente", "id_producto",
+                        "cantidad", "precio_unitario", "total_venta", "fuente"]].copy()
+        pos_std["canal"]  = "tienda_fisica"
+        pos_std["tienda"] = pos["tienda"]
+        partes.append(pos_std)
+        _log(f"  ventas_pos: {len(pos)} registros")
+
+    if online is not None:
+        online_std = online[["id_venta", "fecha", "id_cliente",
+                              "total_venta", "canal", "fuente"]].copy()
+        online_std["id_producto"]     = None
+        online_std["cantidad"]        = 1
+        online_std["precio_unitario"] = online_std["total_venta"]
+        online_std["tienda"]          = None
+        partes.append(online_std)
+        _log(f"  ventas_online: {len(online)} registros")
+
+    ventas = pd.concat(partes, ignore_index=True)
+    ventas["fecha"] = pd.to_datetime(ventas["fecha"])
+    ventas = ventas.sort_values("fecha").reset_index(drop=True)
+    _log(f"  Total consolidado: {len(ventas)} registros")
+    return ventas
+
+
+# ── Paso 2: Enriquecer ───────────────────────────────────────
+
+def enriquecer_ventas(ventas: pd.DataFrame) -> pd.DataFrame:
+    clientes  = cargar("clientes_crm")
+    productos = cargar("productos_erp")
+
+    if clientes is not None:
+        ventas = ventas.merge(
+            clientes[["id_cliente", "nombre", "apellido", "segmento", "ciudad"]],
+            on="id_cliente", how="left"
         )
-        for _, row in df.iterrows()
-    ]
+        _log("  Enriquecido con clientes")
+    else:
+        _log("  Sin clientes disponibles — omitiendo join")
 
-    sql = """
-        INSERT INTO dw.dim_cliente
-            (id_cliente, nombre, apellido, email, segmento, ciudad)
-        VALUES %s
-        ON CONFLICT (id_cliente) DO UPDATE SET
-            nombre   = EXCLUDED.nombre,
-            apellido = EXCLUDED.apellido,
-            email    = EXCLUDED.email,
-            segmento = EXCLUDED.segmento,
-            ciudad   = EXCLUDED.ciudad;
-    """
-    with conn.cursor() as cur:
-        execute_values(cur, sql, registros)
-    _log(f"  {len(registros)} clientes cargados")
-
-
-def cargar_dim_producto(conn):
-    _log(">> Cargando dim_producto...")
-    df = pd.read_csv(os.path.join(TRANSFORMED, "productos_erp_clean.csv"))
-
-    registros = [
-        (
-            int(row["id_producto"]),
-            str(row["nombre_producto"]),
-            str(row["categoria"]),
-            float(row["precio_base"]),
-            str(row["proveedor"])
+    if productos is not None:
+        ventas = ventas.merge(
+            productos[["id_producto", "nombre_producto", "categoria"]],
+            on="id_producto", how="left"
         )
-        for _, row in df.iterrows()
-    ]
+        _log("  Enriquecido con productos")
+    else:
+        _log("  Sin productos disponibles — omitiendo join")
 
-    sql = """
-        INSERT INTO dw.dim_producto
-            (id_producto, nombre_producto, categoria, precio_base, proveedor)
-        VALUES %s
-        ON CONFLICT (id_producto) DO UPDATE SET
-            nombre_producto = EXCLUDED.nombre_producto,
-            categoria       = EXCLUDED.categoria,
-            precio_base     = EXCLUDED.precio_base,
-            proveedor       = EXCLUDED.proveedor;
-    """
-    with conn.cursor() as cur:
-        execute_values(cur, sql, registros)
-    _log(f"  {len(registros)} productos cargados")
+    return ventas
 
 
-def cargar_dim_tiempo(conn):
-    _log(">> Cargando dim_tiempo...")
-    df = pd.read_csv(os.path.join(INTEGRATED, "ventas_consolidadas.csv"))
-    df["fecha"] = pd.to_datetime(df["fecha"])
+# ── Paso 3: Métricas ─────────────────────────────────────────
 
-    fechas_unicas = df["fecha"].dt.date.unique()
+def ventas_por_cliente(ventas: pd.DataFrame) -> pd.DataFrame | None:
+    cols = ["id_cliente", "total_venta", "id_venta"]
+    extra = [c for c in ["nombre", "apellido", "segmento", "ciudad"] if c in ventas.columns]
+    group_cols = ["id_cliente"] + extra
+    if not all(c in ventas.columns for c in cols):
+        return None
+    return ventas.groupby(group_cols, as_index=False).agg(
+        total_compras   = ("total_venta", "sum"),
+        num_transacc    = ("id_venta",    "count"),
+        ticket_promedio = ("total_venta", "mean")
+    ).sort_values("total_compras", ascending=False)
 
-    dias_semana = {
-        0: "Lunes", 1: "Martes", 2: "Miércoles",
-        3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"
+
+def ventas_por_canal(ventas: pd.DataFrame) -> pd.DataFrame | None:
+    if "canal" not in ventas.columns:
+        return None
+    return ventas.groupby("canal", as_index=False).agg(
+        total_ventas  = ("total_venta", "sum"),
+        transacciones = ("id_venta",    "count")
+    ).assign(porcentaje=lambda df: (df["total_ventas"] / df["total_ventas"].sum() * 100).round(1)
+    ).sort_values("total_ventas", ascending=False)
+
+
+def ventas_por_producto(ventas: pd.DataFrame) -> pd.DataFrame | None:
+    if "id_producto" not in ventas.columns or "nombre_producto" not in ventas.columns:
+        return None
+    return ventas.dropna(subset=["id_producto"]).groupby(
+        ["id_producto", "nombre_producto", "categoria"], as_index=False
+    ).agg(
+        total_ventas = ("total_venta", "sum"),
+        unidades     = ("cantidad",    "sum")
+    ).sort_values("total_ventas", ascending=False)
+
+
+def ventas_por_categoria(ventas: pd.DataFrame) -> pd.DataFrame | None:
+    if "categoria" not in ventas.columns:
+        return None
+    return ventas.dropna(subset=["categoria"]).groupby(
+        "categoria", as_index=False
+    ).agg(
+        total_ventas  = ("total_venta", "sum"),
+        transacciones = ("id_venta",    "count")
+    ).sort_values("total_ventas", ascending=False)
+
+
+def ventas_por_fecha(ventas: pd.DataFrame) -> pd.DataFrame | None:
+    if "fecha" not in ventas.columns:
+        return None
+    return ventas.groupby("fecha", as_index=False).agg(
+        total_ventas  = ("total_venta", "sum"),
+        transacciones = ("id_venta",    "count")
+    ).sort_values("fecha")
+
+
+def run() -> dict:
+    _log("=" * 50)
+    _log("INICIO PROCESAMIENTO DE DATOS")
+    _log("=" * 50)
+
+    resultados = {}
+
+    # Paso 1 — Consolidar
+    _log("")
+    _log(">> Consolidando ventas...")
+    ventas = consolidar_ventas()
+
+    if ventas is None:
+        _log("Sin datos de ventas — procesamiento omitido")
+        return resultados
+
+    guardar(ventas, "ventas_consolidadas.csv")
+    resultados["ventas_consolidadas"] = ventas
+
+    # Paso 2 — Enriquecer
+    _log("")
+    _log(">> Enriqueciendo ventas...")
+    ventas_enriq = enriquecer_ventas(ventas)
+    guardar(ventas_enriq, "ventas_enriquecidas.csv")
+    resultados["ventas_enriquecidas"] = ventas_enriq
+
+    # Paso 3 — Métricas
+    _log("")
+    _log(">> Generando métricas...")
+
+    metricas = {
+        "metricas_clientes":  ventas_por_cliente(ventas_enriq),
+        "metricas_canal":     ventas_por_canal(ventas_enriq),
+        "metricas_producto":  ventas_por_producto(ventas_enriq),
+        "metricas_categoria": ventas_por_categoria(ventas_enriq),
+        "metricas_fecha":     ventas_por_fecha(ventas_enriq),
     }
 
-    registros = []
-    for fecha in fechas_unicas:
-        dt = pd.Timestamp(fecha)
-        registros.append((
-            str(fecha),
-            int(dt.day),
-            int(dt.month),
-            int(dt.year),
-            dias_semana[dt.dayofweek],
-            dt.dayofweek >= 5
-        ))
+    for nombre, df in metricas.items():
+        if df is not None:
+            guardar(df, f"{nombre}.csv")
+            resultados[nombre] = df
+        else:
+            _log(f"  Omitida: {nombre} (datos insuficientes)")
 
-    sql = """
-        INSERT INTO dw.dim_tiempo
-            (fecha, dia, mes, anio, dia_semana, es_finde)
-        VALUES %s
-        ON CONFLICT (fecha) DO NOTHING;
-    """
-    with conn.cursor() as cur:
-        execute_values(cur, sql, registros)
-    _log(f"  {len(registros)} fechas cargadas")
+    # Preview de resultados disponibles
+    if "metricas_clientes" in resultados:
+        _log("")
+        _log(">> Top 3 clientes:")
+        for _, row in resultados["metricas_clientes"].head(3).iterrows():
+            nombre = f"{row.get('nombre','?')} {row.get('apellido','')}"
+            _log(f"   {nombre.strip()} — ${row['total_compras']:,.0f} ({int(row['num_transacc'])} transacciones)")
 
+    if "metricas_canal" in resultados:
+        _log("")
+        _log(">> Ventas por canal:")
+        for _, row in resultados["metricas_canal"].iterrows():
+            _log(f"   {row['canal']} — ${row['total_ventas']:,.0f} ({row['porcentaje']}%)")
 
-def cargar_dim_tienda(conn):
-    _log(">> Cargando dim_tienda...")
+    if "metricas_producto" in resultados:
+        _log("")
+        _log(">> Top 3 productos:")
+        for _, row in resultados["metricas_producto"].head(3).iterrows():
+            _log(f"   {row['nombre_producto']} — ${row['total_ventas']:,.0f}")
 
-    # Tiendas desde ventas_pos
-    df = pd.read_csv(os.path.join(TRANSFORMED, "ventas_pos_clean.csv"))
-    tiendas = df["tienda"].dropna().unique()
-
-    sql = """
-        INSERT INTO dw.dim_tienda (nombre_tienda, ciudad, region)
-        VALUES %s
-        ON CONFLICT DO NOTHING;
-    """
-    registros = [(t, t, "Metropolitana") for t in tiendas]
-
-    with conn.cursor() as cur:
-        execute_values(cur, sql, registros)
-    _log(f"  {len(registros)} tiendas verificadas")
-
-
-# ============================================================
-#  CARGA DE HECHOS
-# ============================================================
-
-def obtener_id_tiempo(cur, fecha: str) -> int:
-    cur.execute("SELECT id_tiempo FROM dw.dim_tiempo WHERE fecha = %s", (fecha,))
-    row = cur.fetchone()
-    return row[0] if row else None
-
-
-def obtener_id_canal(cur, tipo_canal: str) -> int:
-    cur.execute("SELECT id_canal FROM dw.dim_canal WHERE tipo_canal = %s", (tipo_canal,))
-    row = cur.fetchone()
-    return row[0] if row else None
-
-
-def obtener_id_tienda(cur, nombre: str) -> int:
-    if not nombre or str(nombre) == "nan":
-        return None
-    cur.execute("SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s", (str(nombre),))
-    row = cur.fetchone()
-    return row[0] if row else None
-
-
-def obtener_id_producto(cur, id_producto) -> int:
-    """Retorna el id_producto si existe en dim_producto, o None si no existe."""
-    if id_producto is None or pd.isna(id_producto):
-        return None
-    id_prod = int(id_producto)
-    cur.execute("SELECT id_producto FROM dw.dim_producto WHERE id_producto = %s", (id_prod,))
-    row = cur.fetchone()
-    return row[0] if row else None
-
-
-def cargar_fact_ventas(conn):
-    _log(">> Cargando fact_ventas...")
-    df = pd.read_csv(os.path.join(INTEGRATED, "ventas_enriquecidas.csv"))
-    df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
-
-    registros = []
-    omitidos = 0
-
-    with conn.cursor() as cur:
-        for _, row in df.iterrows():
-            id_tiempo   = obtener_id_tiempo(cur, str(row["fecha"]))
-            id_canal    = obtener_id_canal(cur, str(row["canal"]))
-            id_tienda   = obtener_id_tienda(cur, row.get("tienda"))
-            id_producto = obtener_id_producto(cur, row.get("id_producto"))
-
-            # Omitir registros con referencias obligatorias faltantes
-            if id_tiempo is None or id_canal is None or id_producto is None:
-                omitidos += 1
-                _log(f"  [OMITIDO] fila id_venta={row.get('id_venta')} — "
-                     f"tiempo={'OK' if id_tiempo else 'FALTA'}, "
-                     f"canal={'OK' if id_canal else 'FALTA'}, "
-                     f"producto={'OK' if id_producto else 'FALTA'}")
-                continue
-
-            registros.append((
-                id_tiempo,
-                int(row["id_cliente"]),
-                id_producto,
-                id_canal,
-                id_tienda,
-                int(row["cantidad"])          if not pd.isna(row["cantidad"])          else 1,
-                float(row["precio_unitario"]) if not pd.isna(row["precio_unitario"])   else 0.0,
-                float(row["total_venta"]),
-                str(row["fuente"]),
-                int(row["id_venta"])
-            ))
-
-    if not registros:
-        _log("  ADVERTENCIA: No hay registros válidos para cargar en fact_ventas")
-        return
-
-    sql = """
-        INSERT INTO dw.fact_ventas
-            (id_tiempo_fk, id_cliente_fk, id_producto_fk, id_canal_fk,
-             id_tienda_fk, cantidad, precio_unitario, total_venta,
-             fuente, id_origen)
-        VALUES %s;
-    """
-    with conn.cursor() as cur:
-        execute_values(cur, sql, registros)
-
-    _log(f"  {len(registros)} registros cargados en fact_ventas")
-    if omitidos > 0:
-        _log(f"  {omitidos} registros omitidos por referencias faltantes en dimensiones")
-
-
-# ============================================================
-#  FUNCIÓN PRINCIPAL
-# ============================================================
-
-def run():
+    _log("")
     _log("=" * 50)
-    _log("INICIO CARGA AL DATA WAREHOUSE")
+    _log(f"PROCESAMIENTO COMPLETO — {len(resultados)} datasets generados")
     _log("=" * 50)
 
-    conn = conectar()
-
-    try:
-        # Limpiar tablas antes de cargar (para evitar duplicados en re-ejecuciones)
-        _log("")
-        _log(">> Limpiando tablas existentes...")
-        with conn.cursor() as cur:
-            cur.execute("TRUNCATE dw.fact_ventas RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_cliente RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_producto RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_tiempo RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_tienda RESTART IDENTITY CASCADE;")
-        _log("  Tablas limpiadas")
-
-        # Cargar dimensiones primero
-        _log("")
-        _log(">> CARGANDO DIMENSIONES:")
-        _log("-" * 40)
-        cargar_dim_cliente(conn)
-        cargar_dim_producto(conn)
-        cargar_dim_tiempo(conn)
-        cargar_dim_tienda(conn)
-
-        # Cargar hechos después
-        _log("")
-        _log(">> CARGANDO TABLA DE HECHOS:")
-        _log("-" * 40)
-        cargar_fact_ventas(conn)
-
-        # Confirmar transacción
-        conn.commit()
-        _log("")
-        _log("=" * 50)
-        _log("CARGA COMPLETA — Datos disponibles en PostgreSQL")
-        _log("=" * 50)
-
-    except Exception as e:
-        conn.rollback()
-        _log(f"ERROR: {e}")
-        raise
-
-    finally:
-        conn.close()
-        _log("Conexión cerrada")
+    return resultados
 
 
-# ============================================================
-#  Ejecución directa
-# ============================================================
 if __name__ == "__main__":
     run()

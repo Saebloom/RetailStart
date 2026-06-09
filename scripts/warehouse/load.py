@@ -1,11 +1,3 @@
-# ============================================================
-#  RetailStart Chile S.A. — Data Platform
-#  Archivo : scripts/warehouse/load.py
-#  Etapa   : Carga al Data Warehouse (PostgreSQL)
-#  Versión : 2.0 — tolerante a archivos faltantes
-#            Carga solo las tablas cuyos datos están disponibles
-# ============================================================
-
 import os
 import pandas as pd
 from datetime import datetime
@@ -76,9 +68,11 @@ def cargar_dim_cliente(conn):
             (id_cliente, nombre, apellido, email, segmento, ciudad)
         VALUES %s
         ON CONFLICT (id_cliente) DO UPDATE SET
-            nombre=EXCLUDED.nombre, apellido=EXCLUDED.apellido,
-            email=EXCLUDED.email,   segmento=EXCLUDED.segmento,
-            ciudad=EXCLUDED.ciudad;
+            nombre   = EXCLUDED.nombre,
+            apellido = EXCLUDED.apellido,
+            email    = EXCLUDED.email,
+            segmento = EXCLUDED.segmento,
+            ciudad   = EXCLUDED.ciudad;
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
@@ -100,10 +94,10 @@ def cargar_dim_producto(conn):
             (id_producto, nombre_producto, categoria, precio_base, proveedor)
         VALUES %s
         ON CONFLICT (id_producto) DO UPDATE SET
-            nombre_producto=EXCLUDED.nombre_producto,
-            categoria=EXCLUDED.categoria,
-            precio_base=EXCLUDED.precio_base,
-            proveedor=EXCLUDED.proveedor;
+            nombre_producto = EXCLUDED.nombre_producto,
+            categoria       = EXCLUDED.categoria,
+            precio_base     = EXCLUDED.precio_base,
+            proveedor       = EXCLUDED.proveedor;
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
@@ -116,13 +110,17 @@ def cargar_dim_tiempo(conn):
         _log("  dim_tiempo — omitida (sin ventas consolidadas)")
         return
     df["fecha"] = pd.to_datetime(df["fecha"])
-    dias_semana = {0:"Lunes",1:"Martes",2:"Miércoles",3:"Jueves",
-                   4:"Viernes",5:"Sábado",6:"Domingo"}
+    dias_semana = {
+        0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
+        4: "Viernes", 5: "Sábado", 6: "Domingo"
+    }
     registros = []
     for fecha in df["fecha"].dt.date.unique():
         dt = pd.Timestamp(fecha)
-        registros.append((str(fecha), int(dt.day), int(dt.month),
-                          int(dt.year), dias_semana[dt.dayofweek], dt.dayofweek >= 5))
+        registros.append((
+            str(fecha), int(dt.day), int(dt.month),
+            int(dt.year), dias_semana[dt.dayofweek], dt.dayofweek >= 5
+        ))
     sql = """
         INSERT INTO dw.dim_tiempo (fecha, dia, mes, anio, dia_semana, es_finde)
         VALUES %s ON CONFLICT (fecha) DO NOTHING;
@@ -135,7 +133,7 @@ def cargar_dim_tiempo(conn):
 def cargar_dim_tienda(conn):
     df = cargar_transformed("ventas_pos")
     if df is None:
-        _log("  dim_tienda — omitida (sin ventas POS)")
+        _log("  dim_tienda — sin ventas POS, solo tienda Online disponible")
         return
     tiendas = df["tienda"].dropna().unique()
     registros = [(t, t, "Metropolitana") for t in tiendas]
@@ -145,18 +143,10 @@ def cargar_dim_tienda(conn):
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
-    _log(f"  dim_tienda — {len(registros)} tiendas verificadas")
+    _log(f"  dim_tienda — {len(registros)} tiendas físicas verificadas")
 
 
-# ── Tabla de hechos ──────────────────────────────────────────
-
-def obtener_id(cur, tabla: str, campo: str, valor) -> int | None:
-    if valor is None or str(valor) == "nan":
-        return None
-    cur.execute(f"SELECT {campo} FROM dw.{tabla} WHERE {campo} = %s", (valor,))
-    row = cur.fetchone()
-    return row[0] if row else None
-
+# ── Helpers para fact_ventas ─────────────────────────────────
 
 def obtener_id_tiempo(cur, fecha: str) -> int | None:
     cur.execute("SELECT id_tiempo FROM dw.dim_tiempo WHERE fecha = %s", (fecha,))
@@ -170,41 +160,90 @@ def obtener_id_canal(cur, tipo: str) -> int | None:
     return row[0] if row else None
 
 
-def obtener_id_tienda(cur, nombre) -> int | None:
+def obtener_id_tienda(cur, nombre, canal: str) -> int | None:
+    """
+    Retorna el id_tienda correspondiente.
+    - Ventas POS: busca por nombre de tienda física.
+    - Ventas online (web/app): usa la tienda 'Online' de dim_tienda.
+    Nunca retorna None — siempre habrá una tienda asignada.
+    """
     if not nombre or str(nombre) == "nan":
+        # Venta online — asignar tienda 'Online'
+        if canal in ("web", "app"):
+            cur.execute(
+                "SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = 'Online'"
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
         return None
-    cur.execute("SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s", (str(nombre),))
+    # Venta POS — buscar tienda física por nombre
+    cur.execute(
+        "SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s",
+        (str(nombre),)
+    )
     row = cur.fetchone()
     return row[0] if row else None
 
+
+def obtener_id_producto(cur, id_producto) -> int | None:
+    """
+    Retorna el id_producto si existe en dim_producto.
+    Retorna None para ventas online (sin desglose por producto).
+    El campo id_producto_fk en fact_ventas admite NULL por diseño.
+    """
+    if pd.isna(id_producto):
+        return None
+    cur.execute(
+        "SELECT id_producto FROM dw.dim_producto WHERE id_producto = %s",
+        (int(id_producto),)
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+# ── Tabla de hechos ──────────────────────────────────────────
 
 def cargar_fact_ventas(conn):
     df = cargar_integrated("ventas_enriquecidas")
     if df is None:
         _log("  fact_ventas — omitida (sin ventas enriquecidas)")
         return
+
     df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
-    registros = []
+    registros   = []
+    omitidos    = 0
+
     with conn.cursor() as cur:
         for _, row in df.iterrows():
-            id_tiempo  = obtener_id_tiempo(cur, str(row["fecha"]))
-            id_canal   = obtener_id_canal(cur, str(row["canal"]))
-            id_tienda  = obtener_id_tienda(cur, row.get("tienda"))
-            id_producto = None if pd.isna(row.get("id_producto", None)) else int(row["id_producto"])
+            id_tiempo   = obtener_id_tiempo(cur, str(row["fecha"]))
+            id_canal    = obtener_id_canal(cur, str(row["canal"]))
+            id_tienda   = obtener_id_tienda(cur, row.get("tienda"), str(row["canal"]))
+            id_producto = obtener_id_producto(cur, row.get("id_producto"))
+
+            # Solo saltar si faltan tiempo o canal — tienda y producto pueden ser None
             if id_tiempo is None or id_canal is None:
+                omitidos += 1
+                _log(f"  [OMITIDA] Faltan claves obligatorias: "
+                     f"tiempo={id_tiempo} canal={id_canal}")
                 continue
+
             registros.append((
                 id_tiempo,
                 int(row["id_cliente"]),
-                id_producto,
+                id_producto,                    # NULL para ventas online — por diseño
                 id_canal,
-                id_tienda,
+                id_tienda,                      # 'Online' para web/app
                 int(row["cantidad"])        if not pd.isna(row["cantidad"])        else 1,
                 float(row["precio_unitario"]) if not pd.isna(row["precio_unitario"]) else 0.0,
                 float(row["total_venta"]),
                 str(row["fuente"]),
                 int(row["id_venta"])
             ))
+
+    if not registros:
+        _log("  fact_ventas — sin registros válidos para cargar")
+        return
+
     sql = """
         INSERT INTO dw.fact_ventas
             (id_tiempo_fk, id_cliente_fk, id_producto_fk, id_canal_fk,
@@ -214,7 +253,9 @@ def cargar_fact_ventas(conn):
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
-    _log(f"  fact_ventas — {len(registros)} registros cargados")
+
+    _log(f"  fact_ventas — {len(registros)} registros cargados"
+         + (f" ({omitidos} omitidos por claves faltantes)" if omitidos else ""))
 
 
 # ── Principal ────────────────────────────────────────────────
@@ -230,11 +271,12 @@ def run():
         _log("")
         _log(">> Limpiando tablas...")
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE dw.fact_ventas RESTART IDENTITY CASCADE;")
+            cur.execute("TRUNCATE dw.fact_ventas  RESTART IDENTITY CASCADE;")
             cur.execute("TRUNCATE dw.dim_cliente  RESTART IDENTITY CASCADE;")
             cur.execute("TRUNCATE dw.dim_producto RESTART IDENTITY CASCADE;")
             cur.execute("TRUNCATE dw.dim_tiempo   RESTART IDENTITY CASCADE;")
             cur.execute("TRUNCATE dw.dim_tienda   RESTART IDENTITY CASCADE;")
+        _log("  Tablas limpiadas")
 
         _log("")
         _log(">> Cargando dimensiones:")

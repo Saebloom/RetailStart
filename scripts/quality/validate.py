@@ -39,7 +39,7 @@ def reporte_calidad(df: pd.DataFrame, nombre: str):
     if nulos > 0:
         por_col = df.isnull().sum()
         for col, cant in por_col[por_col > 0].items():
-            _log(f"    ⚠ Nulos en '{col}': {cant}")
+            _log(f"    Nulos en '{col}': {cant}")
 
 
 # ── Funciones de limpieza específicas ───────────────────────

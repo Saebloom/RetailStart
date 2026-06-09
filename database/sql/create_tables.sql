@@ -1,10 +1,3 @@
--- ============================================================
---  RetailStart Chile S.A. — Data Warehouse
---  Modelo Estrella
---  Archivo : database/sql/create_tables.sql
---  Motor   : PostgreSQL (pgAdmin)
--- ============================================================
- 
 -- ------------------------------------------------------------
 -- 0. Schema propio para el DW (opcional pero recomendado)
 -- ------------------------------------------------------------
@@ -150,8 +143,3 @@ CREATE INDEX IF NOT EXISTS idx_fv_cliente  ON dw.fact_ventas(id_cliente_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_producto ON dw.fact_ventas(id_producto_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_canal    ON dw.fact_ventas(id_canal_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_fuente   ON dw.fact_ventas(fuente);
- 
- 
--- ============================================================
---  FIN DEL SCRIPT
--- ============================================================

@@ -33,7 +33,6 @@ PIPELINE = [
     os.path.join(BASE_DIR, "scripts", "quality",    "validate.py"),
     os.path.join(BASE_DIR, "scripts", "processing", "transform.py"),
     os.path.join(BASE_DIR, "scripts", "warehouse",  "load.py"),
-    os.path.join(BASE_DIR, "scripts", "analytics",  "visualize.py"),
 ]
 
 

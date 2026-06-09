@@ -1,31 +1,38 @@
+-- ============================================================
+--  RetailStart Chile S.A. — Data Warehouse
+--  Modelo Estrella
+--  Archivo : database/sql/create_tables.sql
+--  Motor   : PostgreSQL (pgAdmin / Supabase)
+-- ============================================================
+
 -- ------------------------------------------------------------
--- 0. Schema propio para el DW (opcional pero recomendado)
+-- 0. Schema propio para el DW
 -- ------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS dw;
 SET search_path TO dw;
- 
- 
+
+
 -- ============================================================
 --  DIMENSIONES
 -- ============================================================
- 
+
 -- ------------------------------------------------------------
 -- dim_tiempo
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dw.dim_tiempo (
     id_tiempo       SERIAL          PRIMARY KEY,
     fecha           DATE            NOT NULL UNIQUE,
-    dia             SMALLINT        NOT NULL,   -- 1-31
-    mes             SMALLINT        NOT NULL,   -- 1-12
+    dia             SMALLINT        NOT NULL,
+    mes             SMALLINT        NOT NULL,
     anio            SMALLINT        NOT NULL,
-    dia_semana      VARCHAR(10)     NOT NULL,   -- Lunes … Domingo
+    dia_semana      VARCHAR(10)     NOT NULL,
     es_finde        BOOLEAN         NOT NULL DEFAULT FALSE
 );
- 
-COMMENT ON TABLE  dw.dim_tiempo              IS 'Dimensión de tiempo — granularidad diaria';
-COMMENT ON COLUMN dw.dim_tiempo.es_finde     IS 'TRUE si el día es sábado o domingo';
- 
- 
+
+COMMENT ON TABLE  dw.dim_tiempo          IS 'Dimensión de tiempo — granularidad diaria';
+COMMENT ON COLUMN dw.dim_tiempo.es_finde IS 'TRUE si el día es sábado o domingo';
+
+
 -- ------------------------------------------------------------
 -- dim_cliente
 -- ------------------------------------------------------------
@@ -34,49 +41,48 @@ CREATE TABLE IF NOT EXISTS dw.dim_cliente (
     nombre          VARCHAR(100)    NOT NULL,
     apellido        VARCHAR(100)    NOT NULL,
     email           VARCHAR(150)    NOT NULL,
-    segmento        VARCHAR(20)     NOT NULL,   -- Premium | Regular | Nuevo
+    segmento        VARCHAR(20)     NOT NULL,
     ciudad          VARCHAR(100)    NOT NULL
 );
- 
-COMMENT ON TABLE  dw.dim_cliente             IS 'Dimensión de clientes — fuente: CRM';
-COMMENT ON COLUMN dw.dim_cliente.segmento    IS 'Premium | Regular | Nuevo';
- 
- 
+
+COMMENT ON TABLE  dw.dim_cliente          IS 'Dimensión de clientes — fuente: CRM';
+COMMENT ON COLUMN dw.dim_cliente.segmento IS 'Premium | Regular | Nuevo';
+
+
 -- ------------------------------------------------------------
 -- dim_producto
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dw.dim_producto (
     id_producto     SERIAL          PRIMARY KEY,
     nombre_producto VARCHAR(150)    NOT NULL,
-    categoria       VARCHAR(50)     NOT NULL,   -- Tecnologia | Vestuario | Hogar
+    categoria       VARCHAR(50)     NOT NULL,
     precio_base     NUMERIC(12,2)   NOT NULL,
     proveedor       VARCHAR(100)    NOT NULL
 );
- 
-COMMENT ON TABLE  dw.dim_producto            IS 'Dimensión de productos — fuente: ERP';
-COMMENT ON COLUMN dw.dim_producto.categoria  IS 'Tecnologia | Vestuario | Hogar';
- 
- 
+
+COMMENT ON TABLE  dw.dim_producto           IS 'Dimensión de productos — fuente: ERP';
+COMMENT ON COLUMN dw.dim_producto.categoria IS 'Tecnologia | Vestuario | Hogar';
+
+
 -- ------------------------------------------------------------
 -- dim_canal
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dw.dim_canal (
     id_canal        SERIAL          PRIMARY KEY,
-    tipo_canal      VARCHAR(20)     NOT NULL,   -- tienda_fisica | web | app
+    tipo_canal      VARCHAR(20)     NOT NULL,
     descripcion     VARCHAR(100)
 );
- 
-COMMENT ON TABLE  dw.dim_canal               IS 'Dimensión de canal de venta';
-COMMENT ON COLUMN dw.dim_canal.tipo_canal    IS 'tienda_fisica | web | app';
- 
--- Valores base
+
+COMMENT ON TABLE  dw.dim_canal            IS 'Dimensión de canal de venta';
+COMMENT ON COLUMN dw.dim_canal.tipo_canal IS 'tienda_fisica | web | app';
+
 INSERT INTO dw.dim_canal (tipo_canal, descripcion) VALUES
     ('tienda_fisica', 'Venta en punto de venta físico (POS)'),
     ('web',           'Venta a través de la plataforma e-commerce'),
     ('app',           'Venta a través de la aplicación móvil')
 ON CONFLICT DO NOTHING;
- 
- 
+
+
 -- ------------------------------------------------------------
 -- dim_tienda
 -- ------------------------------------------------------------
@@ -86,10 +92,9 @@ CREATE TABLE IF NOT EXISTS dw.dim_tienda (
     ciudad          VARCHAR(100)    NOT NULL,
     region          VARCHAR(100)    NOT NULL DEFAULT 'Metropolitana'
 );
- 
-COMMENT ON TABLE dw.dim_tienda               IS 'Dimensión de tiendas físicas — fuente: ERP / POS';
- 
--- Tiendas presentes en los datasets
+
+COMMENT ON TABLE dw.dim_tienda IS 'Dimensión de tiendas — incluye tienda virtual para ventas online';
+
 INSERT INTO dw.dim_tienda (nombre_tienda, ciudad, region) VALUES
     ('Santiago Centro',  'Santiago',    'Metropolitana'),
     ('Providencia',      'Providencia', 'Metropolitana'),
@@ -98,48 +103,60 @@ INSERT INTO dw.dim_tienda (nombre_tienda, ciudad, region) VALUES
     ('La Florida',       'La Florida',  'Metropolitana'),
     ('Puente Alto',      'Puente Alto', 'Metropolitana'),
     ('Ñuñoa',            'Ñuñoa',       'Metropolitana'),
-    ('Online',           'N/A',         'N/A')            -- canal online no tiene tienda física
+    ('Online',           'N/A',         'N/A')
 ON CONFLICT DO NOTHING;
- 
- 
+
+
 -- ============================================================
 --  TABLA DE HECHOS
 -- ============================================================
- 
+
 -- ------------------------------------------------------------
--- fact_ventas  (consolida ventas_pos + ventas_online)
+-- fact_ventas
+-- Consolida ventas_pos + ventas_online
+-- id_producto_fk admite NULL para ventas online (sin desglose
+-- por producto — el dataset solo trae el total del pedido)
+-- id_tienda_fk nunca es NULL: ventas online usan la tienda
+-- 'Online' de dim_tienda
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dw.fact_ventas (
     id_venta            SERIAL          PRIMARY KEY,
- 
-    -- Claves foráneas a dimensiones
+
+    -- Claves foráneas
     id_tiempo_fk        INT             NOT NULL REFERENCES dw.dim_tiempo(id_tiempo),
     id_cliente_fk       INT             NOT NULL REFERENCES dw.dim_cliente(id_cliente),
-    id_producto_fk      INT             NOT NULL REFERENCES dw.dim_producto(id_producto),
+    id_producto_fk      INT                      REFERENCES dw.dim_producto(id_producto),  -- NULL para ventas online
     id_canal_fk         INT             NOT NULL REFERENCES dw.dim_canal(id_canal),
-    id_tienda_fk        INT                      REFERENCES dw.dim_tienda(id_tienda),
- 
+    id_tienda_fk        INT                      REFERENCES dw.dim_tienda(id_tienda),       -- NULL para ventas online
+
     -- Métricas
     cantidad            SMALLINT        NOT NULL DEFAULT 1,
     precio_unitario     NUMERIC(12,2)   NOT NULL,
-    total_venta         NUMERIC(14,2)   NOT NULL,   -- cantidad * precio_unitario
- 
+    total_venta         NUMERIC(14,2)   NOT NULL,
+
     -- Trazabilidad
-    fuente              VARCHAR(20)     NOT NULL,   -- POS | online
-    id_origen           INT             NOT NULL    -- id_venta del POS o id_orden del e-commerce
+    fuente              VARCHAR(20)     NOT NULL,
+    id_origen           INT             NOT NULL
 );
- 
-COMMENT ON TABLE  dw.fact_ventas              IS 'Tabla de hechos de ventas — consolida POS y e-commerce';
-COMMENT ON COLUMN dw.fact_ventas.fuente       IS 'POS | online — identifica el sistema de origen';
-COMMENT ON COLUMN dw.fact_ventas.id_origen    IS 'ID original del registro en el sistema fuente';
-COMMENT ON COLUMN dw.fact_ventas.id_tienda_fk IS 'NULL cuando el canal es web o app';
- 
- 
+
+COMMENT ON TABLE  dw.fact_ventas              IS 'Tabla de hechos — consolida POS y e-commerce';
+COMMENT ON COLUMN dw.fact_ventas.fuente       IS 'POS | online';
+COMMENT ON COLUMN dw.fact_ventas.id_origen    IS 'ID original en el sistema fuente';
+COMMENT ON COLUMN dw.fact_ventas.id_producto_fk IS 'NULL cuando la venta es online (sin desglose por producto)';
+COMMENT ON COLUMN dw.fact_ventas.id_tienda_fk   IS 'NULL para ventas online (sin tienda fisica asociada)';
+
+
 -- ============================================================
---  ÍNDICES — mejoran el rendimiento de las consultas analíticas
+--  ÍNDICES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_fv_tiempo   ON dw.fact_ventas(id_tiempo_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_cliente  ON dw.fact_ventas(id_cliente_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_producto ON dw.fact_ventas(id_producto_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_canal    ON dw.fact_ventas(id_canal_fk);
+CREATE INDEX IF NOT EXISTS idx_fv_tienda   ON dw.fact_ventas(id_tienda_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_fuente   ON dw.fact_ventas(fuente);
+
+
+-- ============================================================
+--  FIN DEL SCRIPT
+-- ============================================================

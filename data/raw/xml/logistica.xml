@@ -1,0 +1,7 @@
+<pedidos>
+  <pedido><id>1</id><cliente>101</cliente><estado>Enviado</estado></pedido>
+  <pedido><id>2</id><cliente>102</cliente><estado>Entregado</estado></pedido>
+  <pedido><id>3</id><cliente>103</cliente><estado>Pendiente</estado></pedido>
+  <pedido><id>4</id><cliente>104</cliente><estado>En tránsito</estado></pedido>
+  <pedido><id>5</id><cliente>105</cliente><estado>Entregado</estado></pedido>
+</pedidos>

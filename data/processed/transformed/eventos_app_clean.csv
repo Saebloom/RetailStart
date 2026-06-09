@@ -1,0 +1,11 @@
+id_evento,id_cliente,tipo,producto
+1,101,click,2001
+2,102,busqueda,2002
+3,103,click,2003
+4,104,compra,2004
+5,105,click,2002
+6,106,busqueda,2005
+7,107,click,2003
+8,108,compra,2006
+9,109,click,2001
+10,110,busqueda,2004

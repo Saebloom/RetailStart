@@ -1,0 +1,11 @@
+id_producto,nombre_producto,categoria,precio_base,proveedor
+2001,Notebook Lenovo,Tecnologia,140000,Lenovo
+2002,Smartphone Samsung,Tecnologia,280000,Samsung
+2003,Polera Hombre,Vestuario,30000,Nike
+2004,Silla Oficina,Hogar,15000,Ikea
+2005,Audifonos Sony,Tecnologia,70000,Sony
+2006,Tablet Huawei,Tecnologia,100000,Huawei
+2007,Zapatos Mujer,Vestuario,50000,Adidas
+2008,Microondas,Hogar,80000,LG
+2009,Monitor,Tecnologia,120000,Dell
+2010,Mochila,Vestuario,25000,Puma

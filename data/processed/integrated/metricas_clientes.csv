@@ -1,0 +1,11 @@
+id_cliente,nombre,apellido,segmento,ciudad,total_compras,num_transacc,ticket_promedio
+101,Juan,Perez,Premium,Santiago,900000.0,4,225000.0
+105,Pedro,Diaz,Regular,Temuco,900000.0,2,450000.0
+102,Ana,Gomez,Regular,Valparaiso,300000.0,1,300000.0
+109,Andres,Castro,Premium,La Serena,300000.0,2,150000.0
+108,Sofia,Reyes,Regular,Santiago,240000.0,2,120000.0
+107,Diego,Soto,Nuevo,Antofagasta,200000.0,2,100000.0
+106,Laura,Martinez,Premium,Santiago,160000.0,2,80000.0
+104,Maria,Lopez,Nuevo,Santiago,120000.0,2,60000.0
+103,Carlos,Rojas,Premium,Concepcion,100000.0,2,50000.0
+110,Camila,Vega,Nuevo,Santiago,25000.0,1,25000.0

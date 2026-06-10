@@ -1,7 +1,22 @@
+# ============================================================
+#  RetailStart Chile S.A. — Data Platform
+#  Archivo : scripts/ingestion/watcher.py
+#  Etapa   : Orquestación automatizada con segmentación temporal
+#  Versión : 2.0
+#
+#  Flujo:
+#   inbox/ → raw/ (archivo completo)
+#            processed/cleaned/FECHA/ (segmentado por día)
+#            processed/transformed/FECHA/
+#            processed/integrated/FECHA/ (con métricas)
+#            PostgreSQL DW
+# ============================================================
+
 import os
 import shutil
 import time
 import subprocess
+import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 from watchdog.observers import Observer
@@ -9,25 +24,17 @@ from watchdog.events import FileSystemEventHandler
 
 load_dotenv()
 
-# ------------------------------------------------------------
-# Rutas base
-# ------------------------------------------------------------
-BASE_DIR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-INBOX     = os.path.join(BASE_DIR, "data", "inbox")
-RAW_CSV   = os.path.join(BASE_DIR, "data", "raw", "csv")
-RAW_JSON  = os.path.join(BASE_DIR, "data", "raw", "json")
-RAW_XML   = os.path.join(BASE_DIR, "data", "raw", "xml")
-RAW_TXT   = os.path.join(BASE_DIR, "data", "raw", "txt")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+INBOX    = os.path.join(BASE_DIR, "data", "inbox")
+RAW_DIR  = os.path.join(BASE_DIR, "data", "raw")
 
-# Mapeo extensión → carpeta destino
 DESTINOS = {
-    ".csv":  RAW_CSV,
-    ".json": RAW_JSON,
-    ".xml":  RAW_XML,
-    ".txt":  RAW_TXT,
+    ".csv":  "csv",
+    ".json": "json",
+    ".xml":  "xml",
+    ".txt":  "txt",
 }
 
-# Scripts del pipeline en orden
 PIPELINE = [
     os.path.join(BASE_DIR, "scripts", "ingestion",  "ingest.py"),
     os.path.join(BASE_DIR, "scripts", "quality",    "validate.py"),
@@ -41,166 +48,169 @@ def _log(msg: str):
 
 
 def crear_carpetas():
-    """Crea inbox/ y todas las carpetas raw/ si no existen."""
-    carpetas = [INBOX, RAW_CSV, RAW_JSON, RAW_XML, RAW_TXT]
-    for c in carpetas:
-        os.makedirs(c, exist_ok=True)
+    os.makedirs(INBOX, exist_ok=True)
 
 
-def clasificar_archivo(ruta_archivo: str) -> str | None:
-    """
-    Determina la carpeta destino según la extensión del archivo.
-    Retorna la ruta destino o None si la extensión no es reconocida.
-    """
-    _, ext = os.path.splitext(ruta_archivo)
-    return DESTINOS.get(ext.lower())
-
-
-def mover_archivo(origen: str, destino_dir: str) -> str:
-    """
-    Mueve el archivo desde inbox/ a su carpeta raw/ correspondiente.
-    Si ya existe un archivo con el mismo nombre lo sobreescribe.
-    Retorna la ruta final del archivo movido.
-    """
-    nombre = os.path.basename(origen)
-    destino = os.path.join(destino_dir, nombre)
-    shutil.move(origen, destino)
-    return destino
-
-
-def ejecutar_pipeline():
-    """
-    Ejecuta los scripts del pipeline en orden.
-    Si alguno falla detiene la ejecución y muestra el error.
-    """
-    _log("")
-    _log("=" * 50)
-    _log("DISPARANDO PIPELINE AUTOMÁTICO")
-    _log("=" * 50)
-
+def ejecutar_pipeline(fecha: str) -> bool:
+    """Ejecuta el pipeline completo pasando la fecha como argumento."""
     for script in PIPELINE:
         nombre = os.path.basename(script)
-        _log(f">> Ejecutando: {nombre}...")
+        _log(f"   >> Ejecutando: {nombre} [{fecha}]...")
 
         resultado = subprocess.run(
-            ["python", script],
+            ["python", script, fecha],
             capture_output=True,
             text=True
         )
 
         if resultado.returncode == 0:
-            # Mostrar solo las líneas importantes del output
             for linea in resultado.stdout.splitlines():
-                if any(k in linea for k in ["COMPLETO", "INICIO", "ERROR", "cargado", "Guardado", "exitosa"]):
-                    _log(f"   {linea.strip()}")
-            _log(f"   ✓ {nombre} completado")
+                if any(k in linea for k in [
+                    "COMPLETO", "INICIO", "cargado", "Guardado",
+                    "exitosa", "procesados", "omitida", "CARGA"
+                ]):
+                    _log(f"      {linea.strip()}")
+            _log(f"   [OK] {nombre} completado")
         else:
-            _log(f"   ✗ ERROR en {nombre}:")
+            _log(f"   [ERROR] {nombre} para fecha {fecha}:")
             for linea in resultado.stderr.splitlines()[-5:]:
-                _log(f"     {linea}")
-            _log("Pipeline detenido por error. Corrija el problema y vuelva a soltar el archivo.")
+                _log(f"      {linea}")
+            _log(f"   Pipeline abortado para el dia {fecha}.")
             return False
-
-    _log("")
-    _log("=" * 50)
-    _log("PIPELINE COMPLETADO EXITOSAMENTE")
-    _log("Los gráficos están en dashboards/exports/")
-    _log("Los datos están disponibles en PostgreSQL")
-    _log("=" * 50)
     return True
 
 
 # ============================================================
-#  MANEJADOR DE EVENTOS
+#  MANEJADOR
 # ============================================================
 
 class InboxHandler(FileSystemEventHandler):
-    """
-    Escucha eventos de creación de archivos en inbox/.
-    Cuando detecta un archivo nuevo lo clasifica y
-    dispara el pipeline completo.
-    """
 
     def __init__(self):
         super().__init__()
-        self.procesando = False  # evita disparos múltiples simultáneos
+        self.procesando = False
 
     def on_created(self, event):
-        # Ignorar carpetas y archivos temporales
         if event.is_directory:
             return
-        if os.path.basename(event.src_path).startswith("."):
-            return
-        if event.src_path.endswith(".tmp") or event.src_path.endswith("~"):
+        nombre = os.path.basename(event.src_path)
+        if nombre.startswith(".") or nombre.endswith(".tmp") or nombre.endswith("~"):
             return
 
-        # Esperar brevemente para que el archivo termine de copiarse
-        time.sleep(1)
+        time.sleep(1.5)
 
         if self.procesando:
-            _log(f"Pipeline en curso — archivo en cola: {os.path.basename(event.src_path)}")
+            _log(f"Watcher ocupado — en cola: {nombre}")
             return
 
         self.procesando = True
-        archivo = event.src_path
-        nombre  = os.path.basename(archivo)
+        ruta_origen = event.src_path
+        _, ext = os.path.splitext(nombre)
+        ext = ext.lower()
 
         _log("")
-        _log(f"Archivo detectado: {nombre}")
+        _log("=" * 60)
+        _log(f"ARCHIVO DETECTADO: {nombre}")
+        _log("=" * 60)
 
-        # Clasificar por extensión
-        destino_dir = clasificar_archivo(archivo)
-
-        if destino_dir is None:
-            _log(f"  Extensión no reconocida — archivo ignorado: {nombre}")
-            _log(f"  Extensiones válidas: .csv, .json, .xml, .txt")
+        if ext not in DESTINOS:
+            _log(f"Extension {ext} no soportada. Ignorado.")
             self.procesando = False
             return
 
-        # Mover a raw/
+        tipo = DESTINOS[ext]
+
         try:
-            destino_final = mover_archivo(archivo, destino_dir)
-            carpeta_rel   = os.path.relpath(destino_dir, BASE_DIR)
-            _log(f"  Movido a: {carpeta_rel}/{nombre}")
-        except Exception as e:
-            _log(f"  Error al mover archivo: {e}")
-            self.procesando = False
-            return
+            # ── Paso 1: copiar archivo original a raw/ (intacto) ──────
+            destino_raw = os.path.join(RAW_DIR, tipo, nombre)
+            os.makedirs(os.path.join(RAW_DIR, tipo), exist_ok=True)
+            shutil.copy2(ruta_origen, destino_raw)
+            _log(f"   Copiado a raw/{tipo}/{nombre} (archivo original intacto)")
 
-        # Disparar pipeline
-        ejecutar_pipeline()
+            # ── Paso 2: procesar según tipo ───────────────────────────
+            if ext == ".csv":
+                df = pd.read_csv(ruta_origen)
+
+                if "fecha" in df.columns:
+                    df["fecha_clean"] = pd.to_datetime(df["fecha"]).dt.strftime("%Y-%m-%d")
+                    fechas = sorted(df["fecha_clean"].unique())
+                    _log(f"   Dias encontrados: {fechas}")
+
+                    for fecha in fechas:
+                        _log("")
+                        _log(f"-- DIA: {fecha} " + "-" * 40)
+
+                        # Segmentar y guardar en cleaned/FECHA/
+                        df_dia = df[df["fecha_clean"] == fecha].drop(columns=["fecha_clean"])
+                        cleaned_dir = os.path.join(
+                            BASE_DIR, "data", "processed", "cleaned", fecha
+                        )
+                        os.makedirs(cleaned_dir, exist_ok=True)
+                        df_dia.to_csv(
+                            os.path.join(cleaned_dir, nombre.replace(".csv", "_raw.csv")),
+                            index=False
+                        )
+                        _log(f"   Segmentado en cleaned/{fecha}/{nombre.replace('.csv','_raw.csv')}")
+
+                        # Ejecutar pipeline para este día
+                        exito = ejecutar_pipeline(fecha)
+                        if not exito:
+                            break
+
+                else:
+                    # Dataset maestro sin fecha (productos, clientes, etc.)
+                    _log("   Dataset maestro (sin columna fecha) — guardando en cleaned/maestros/")
+                    maestros_dir = os.path.join(
+                        BASE_DIR, "data", "processed", "cleaned", "maestros"
+                    )
+                    os.makedirs(maestros_dir, exist_ok=True)
+                    shutil.copy2(
+                        ruta_origen,
+                        os.path.join(maestros_dir, nombre.replace(".csv", "_raw.csv"))
+                    )
+                    _log(f"   Guardado en cleaned/maestros/{nombre.replace('.csv','_raw.csv')}")
+
+            else:
+                # JSON, XML, TXT — sin segmentación por fecha
+                _log(f"   Formato {ext} — sin segmentacion temporal, procesando directo")
+                ejecutar_pipeline("maestros")
+
+            # ── Paso 3: limpiar inbox ─────────────────────────────────
+            os.remove(ruta_origen)
+            _log("")
+            _log("=" * 60)
+            _log("PROCESAMIENTO COMPLETADO EXITOSAMENTE")
+            _log("=" * 60)
+
+        except Exception as e:
+            _log(f"[ERROR] {e}")
+
         self.procesando = False
 
     def on_moved(self, event):
-        """También detecta archivos que son arrastrados a inbox/."""
         if not event.is_directory and event.dest_path.startswith(INBOX):
-            self.on_created(type('E', (), {
-                'is_directory': False,
-                'src_path': event.dest_path
+            self.on_created(type("E", (), {
+                "is_directory": False,
+                "src_path": event.dest_path
             })())
 
 
 # ============================================================
-#  FUNCIÓN PRINCIPAL
+#  PRINCIPAL
 # ============================================================
 
 def run():
     crear_carpetas()
 
-    _log("=" * 50)
-    _log("WATCHER INICIADO — RetailStart Data Platform")
-    _log("=" * 50)
-    _log(f"Escuchando: data/inbox/")
-    _log(f"Extensiones válidas: .csv | .json | .xml | .txt")
-    _log(f"Destinos:")
-    _log(f"  .csv  → data/raw/csv/")
-    _log(f"  .json → data/raw/json/")
-    _log(f"  .xml  → data/raw/xml/")
-    _log(f"  .txt  → data/raw/txt/")
-    _log("")
-    _log("Suelta cualquier archivo en data/inbox/ para iniciar el pipeline.")
-    _log("Presiona Ctrl+C para detener el watcher.")
-    _log("=" * 50)
+    _log("=" * 60)
+    _log("WATCHER INICIADO — RetailStart Chile S.A.")
+    _log("=" * 60)
+    _log("Escuchando: data/inbox/")
+    _log("CSV con fechas  -> segmentado por dia en cleaned/FECHA/")
+    _log("CSV sin fechas  -> cleaned/maestros/ (datos maestros)")
+    _log("JSON / XML / TXT -> raw/ directo")
+    _log("Ctrl+C para detener.")
+    _log("=" * 60)
 
     handler  = InboxHandler()
     observer = Observer()
@@ -211,15 +221,11 @@ def run():
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        _log("")
-        _log("Watcher detenido por el usuario.")
+        _log("Watcher detenido.")
         observer.stop()
 
     observer.join()
 
 
-# ============================================================
-#  Ejecución directa
-# ============================================================
 if __name__ == "__main__":
     run()

@@ -1,48 +1,51 @@
+# ============================================================
+#  RetailStart Chile S.A. — Data Platform
+#  Archivo : scripts/quality/validate.py
+#  Versión : 3.0 — con soporte de fecha como argumento
+#  Uso     : python validate.py [fecha]
+# ============================================================
+
 import os
+import sys
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv(encoding="utf-8")
 
-BASE_DIR    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CLEANED     = os.path.join(BASE_DIR, "data", "processed", "cleaned")
-TRANSFORMED = os.path.join(BASE_DIR, "data", "processed", "transformed")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
-def existe_cleaned(nombre: str) -> bool:
-    return os.path.isfile(os.path.join(CLEANED, f"{nombre}_raw.csv"))
+def get_dir(zona: str, fecha: str) -> str:
+    ruta = os.path.join(BASE_DIR, "data", "processed", zona, fecha)
+    os.makedirs(ruta, exist_ok=True)
+    return ruta
 
 
-def cargar(nombre: str) -> pd.DataFrame | None:
-    ruta = os.path.join(CLEANED, f"{nombre}_raw.csv")
+def cargar(nombre: str, cleaned_dir: str) -> pd.DataFrame | None:
+    ruta = os.path.join(cleaned_dir, f"{nombre}_raw.csv")
     if not os.path.isfile(ruta):
         return None
     return pd.read_csv(ruta)
 
 
-def guardar_limpio(df: pd.DataFrame, nombre: str):
-    os.makedirs(TRANSFORMED, exist_ok=True)
-    ruta = os.path.join(TRANSFORMED, nombre)
+def guardar(df: pd.DataFrame, nombre: str, transformed_dir: str):
+    ruta = os.path.join(transformed_dir, nombre)
     df.to_csv(ruta, index=False)
     _log(f"  Guardado: {nombre} ({len(df)} filas)")
 
 
-def reporte_calidad(df: pd.DataFrame, nombre: str):
-    duplicados = df.duplicated().sum()
-    nulos      = df.isnull().sum().sum()
-    _log(f"  [{nombre}] Filas: {len(df)}  Duplicados: {duplicados}  Nulos: {nulos}")
-    if nulos > 0:
-        por_col = df.isnull().sum()
-        for col, cant in por_col[por_col > 0].items():
-            _log(f"    Nulos en '{col}': {cant}")
+def reporte(df: pd.DataFrame, nombre: str):
+    dups  = df.duplicated().sum()
+    nulos = df.isnull().sum().sum()
+    _log(f"  [{nombre}] Filas: {len(df)}  Dups: {dups}  Nulos: {nulos}")
 
 
-# ── Funciones de limpieza específicas ───────────────────────
+# ── Funciones de limpieza ────────────────────────────────────
 
 def limpiar_ventas_pos(df):
     df = df.drop_duplicates()
@@ -56,10 +59,10 @@ def limpiar_ventas_pos(df):
 
 def limpiar_ventas_online(df):
     df = df.drop_duplicates()
-    df["fecha"]       = pd.to_datetime(df["fecha"])
-    df["total"]       = df["total"].astype(float)
-    df["canal"]       = df["canal"].str.strip().str.lower()
-    df["fuente"]      = "online"
+    df["fecha"]      = pd.to_datetime(df["fecha"])
+    df["total"]      = df["total"].astype(float)
+    df["canal"]      = df["canal"].str.strip().str.lower()
+    df["fuente"]     = "online"
     df = df.rename(columns={"id_orden": "id_venta", "total": "total_venta"})
     return df
 
@@ -93,7 +96,8 @@ def limpiar_eventos_app(df):
 
 def limpiar_callcenter(df):
     df = df.drop_duplicates()
-    df["fecha"]    = pd.to_datetime(df["fecha"])
+    if "fecha" in df.columns:
+        df["fecha"] = pd.to_datetime(df["fecha"])
     df["motivo"]   = df["motivo"].str.strip()
     df["duracion"] = df["duracion"].astype(int)
     return df
@@ -108,7 +112,6 @@ def limpiar_generica(df):
     return df.drop_duplicates()
 
 
-# Mapeo nombre → función de limpieza
 LIMPIEZAS = {
     "ventas_pos":    limpiar_ventas_pos,
     "ventas_online": limpiar_ventas_online,
@@ -124,50 +127,46 @@ LIMPIEZAS = {
 }
 
 
-def run() -> dict:
+def run(fecha: str = None):
+    if fecha is None:
+        fecha = sys.argv[1] if len(sys.argv) > 1 else "sin_fecha"
+
+    cleaned_dir     = get_dir("cleaned", fecha)
+    transformed_dir = get_dir("transformed", fecha)
+
     _log("=" * 50)
-    _log("INICIO VALIDACIÓN Y LIMPIEZA DE DATOS")
+    _log(f"INICIO VALIDACION — Fecha: {fecha}")
     _log("=" * 50)
 
-    # Detectar qué datasets están disponibles en cleaned/
-    disponibles = [n for n in LIMPIEZAS.keys() if existe_cleaned(n)]
+    disponibles = [n for n in LIMPIEZAS if
+                   os.path.isfile(os.path.join(cleaned_dir, f"{n}_raw.csv"))]
 
     if not disponibles:
-        _log("No se encontraron archivos en cleaned/ — ejecuta ingest.py primero")
+        _log(f"Sin archivos en cleaned/{fecha}/ — omitiendo")
         return {}
 
-    _log("")
-    _log(f">> Datasets disponibles: {len(disponibles)}")
+    _log(f"\n>> Datasets disponibles ({len(disponibles)}): {disponibles}")
 
-    # Reporte de calidad
-    _log("")
-    _log(">> REPORTE DE CALIDAD INICIAL:")
-    _log("-" * 40)
+    _log("\n>> Reporte de calidad:")
     for nombre in disponibles:
-        df = cargar(nombre)
+        df = cargar(nombre, cleaned_dir)
         if df is not None:
-            reporte_calidad(df, nombre)
+            reporte(df, nombre)
 
-    # Limpieza
-    _log("")
-    _log(">> LIMPIEZA:")
-    _log("-" * 40)
-
+    _log("\n>> Limpieza:")
     datasets_limpios = {}
     for nombre in disponibles:
-        df = cargar(nombre)
+        df = cargar(nombre, cleaned_dir)
         if df is None:
             continue
-        fn_limpiar = LIMPIEZAS[nombre]
-        df_limpio  = fn_limpiar(df)
-        guardar_limpio(df_limpio, f"{nombre}_clean.csv")
+        df_limpio = LIMPIEZAS[nombre](df)
+        guardar(df_limpio, f"{nombre}_clean.csv", transformed_dir)
         datasets_limpios[nombre] = df_limpio
 
     _log("")
     _log("=" * 50)
-    _log(f"VALIDACIÓN COMPLETA — {len(datasets_limpios)} datasets limpios")
+    _log(f"VALIDACION COMPLETA — {len(datasets_limpios)} datasets | Fecha: {fecha}")
     _log("=" * 50)
-
     return datasets_limpios
 
 

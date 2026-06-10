@@ -1,4 +1,12 @@
+# ============================================================
+#  RetailStart Chile S.A. — Data Platform
+#  Archivo : scripts/warehouse/load.py
+#  Versión : 3.0 — con soporte de fecha como argumento
+#  Uso     : python load.py [fecha]
+# ============================================================
+
 import os
+import sys
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
@@ -7,32 +15,23 @@ from psycopg2.extras import execute_values
 
 load_dotenv(encoding="utf-8")
 
-BASE_DIR    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-INTEGRATED  = os.path.join(BASE_DIR, "data", "processed", "integrated")
-TRANSFORMED = os.path.join(BASE_DIR, "data", "processed", "transformed")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
-def existe_integrated(nombre: str) -> bool:
-    return os.path.isfile(os.path.join(INTEGRATED, f"{nombre}.csv"))
+def get_integrated(fecha: str) -> str:
+    return os.path.join(BASE_DIR, "data", "processed", "integrated", fecha)
 
 
-def existe_transformed(nombre: str) -> bool:
-    return os.path.isfile(os.path.join(TRANSFORMED, f"{nombre}_clean.csv"))
+def get_transformed(fecha: str) -> str:
+    return os.path.join(BASE_DIR, "data", "processed", "transformed", fecha)
 
 
-def cargar_integrated(nombre: str) -> pd.DataFrame | None:
-    ruta = os.path.join(INTEGRATED, f"{nombre}.csv")
-    if not os.path.isfile(ruta):
-        return None
-    return pd.read_csv(ruta)
-
-
-def cargar_transformed(nombre: str) -> pd.DataFrame | None:
-    ruta = os.path.join(TRANSFORMED, f"{nombre}_clean.csv")
+def cargar_csv(carpeta: str, nombre: str) -> pd.DataFrame | None:
+    ruta = os.path.join(carpeta, nombre)
     if not os.path.isfile(ruta):
         return None
     return pd.read_csv(ruta)
@@ -47,16 +46,16 @@ def conectar():
         password = os.getenv("DB_PASSWORD", "")
     )
     conn.autocommit = False
-    _log("Conexión a PostgreSQL exitosa")
+    _log("Conexion a PostgreSQL exitosa")
     return conn
 
 
 # ── Dimensiones ──────────────────────────────────────────────
 
-def cargar_dim_cliente(conn):
-    df = cargar_transformed("clientes_crm")
+def cargar_dim_cliente(conn, transformed_dir: str):
+    df = cargar_csv(transformed_dir, "clientes_crm_clean.csv")
     if df is None:
-        _log("  dim_cliente — omitida (sin datos)")
+        _log("  dim_cliente — omitida")
         return
     registros = [
         (int(r["id_cliente"]), str(r["nombre"]), str(r["apellido"]),
@@ -68,21 +67,19 @@ def cargar_dim_cliente(conn):
             (id_cliente, nombre, apellido, email, segmento, ciudad)
         VALUES %s
         ON CONFLICT (id_cliente) DO UPDATE SET
-            nombre   = EXCLUDED.nombre,
-            apellido = EXCLUDED.apellido,
-            email    = EXCLUDED.email,
-            segmento = EXCLUDED.segmento,
-            ciudad   = EXCLUDED.ciudad;
+            nombre=EXCLUDED.nombre, apellido=EXCLUDED.apellido,
+            email=EXCLUDED.email,   segmento=EXCLUDED.segmento,
+            ciudad=EXCLUDED.ciudad;
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
     _log(f"  dim_cliente — {len(registros)} registros cargados")
 
 
-def cargar_dim_producto(conn):
-    df = cargar_transformed("productos_erp")
+def cargar_dim_producto(conn, transformed_dir: str):
+    df = cargar_csv(transformed_dir, "productos_erp_clean.csv")
     if df is None:
-        _log("  dim_producto — omitida (sin datos)")
+        _log("  dim_producto — omitida")
         return
     registros = [
         (int(r["id_producto"]), str(r["nombre_producto"]),
@@ -94,32 +91,30 @@ def cargar_dim_producto(conn):
             (id_producto, nombre_producto, categoria, precio_base, proveedor)
         VALUES %s
         ON CONFLICT (id_producto) DO UPDATE SET
-            nombre_producto = EXCLUDED.nombre_producto,
-            categoria       = EXCLUDED.categoria,
-            precio_base     = EXCLUDED.precio_base,
-            proveedor       = EXCLUDED.proveedor;
+            nombre_producto=EXCLUDED.nombre_producto,
+            categoria=EXCLUDED.categoria,
+            precio_base=EXCLUDED.precio_base,
+            proveedor=EXCLUDED.proveedor;
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
     _log(f"  dim_producto — {len(registros)} registros cargados")
 
 
-def cargar_dim_tiempo(conn):
-    df = cargar_integrated("ventas_consolidadas")
+def cargar_dim_tiempo(conn, integrated_dir: str):
+    df = cargar_csv(integrated_dir, "ventas_consolidadas.csv")
     if df is None:
-        _log("  dim_tiempo — omitida (sin ventas consolidadas)")
+        _log("  dim_tiempo — omitida")
         return
     df["fecha"] = pd.to_datetime(df["fecha"])
-    dias_semana = {
-        0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
-        4: "Viernes", 5: "Sábado", 6: "Domingo"
-    }
+    dias = {0:"Lunes",1:"Martes",2:"Miercoles",3:"Jueves",
+            4:"Viernes",5:"Sabado",6:"Domingo"}
     registros = []
     for fecha in df["fecha"].dt.date.unique():
         dt = pd.Timestamp(fecha)
         registros.append((
             str(fecha), int(dt.day), int(dt.month),
-            int(dt.year), dias_semana[dt.dayofweek], dt.dayofweek >= 5
+            int(dt.year), dias[dt.dayofweek], dt.dayofweek >= 5
         ))
     sql = """
         INSERT INTO dw.dim_tiempo (fecha, dia, mes, anio, dia_semana, es_finde)
@@ -130,10 +125,10 @@ def cargar_dim_tiempo(conn):
     _log(f"  dim_tiempo — {len(registros)} fechas cargadas")
 
 
-def cargar_dim_tienda(conn):
-    df = cargar_transformed("ventas_pos")
+def cargar_dim_tienda(conn, transformed_dir: str):
+    df = cargar_csv(transformed_dir, "ventas_pos_clean.csv")
     if df is None:
-        _log("  dim_tienda — sin ventas POS, solo tienda Online disponible")
+        _log("  dim_tienda — omitida (sin ventas POS)")
         return
     tiendas = df["tienda"].dropna().unique()
     registros = [(t, t, "Metropolitana") for t in tiendas]
@@ -143,70 +138,43 @@ def cargar_dim_tienda(conn):
     """
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
-    _log(f"  dim_tienda — {len(registros)} tiendas físicas verificadas")
+    _log(f"  dim_tienda — {len(registros)} tiendas verificadas")
 
 
-# ── Helpers para fact_ventas ─────────────────────────────────
+# ── Helpers fact_ventas ──────────────────────────────────────
 
-def obtener_id_tiempo(cur, fecha: str) -> int | None:
+def get_id_tiempo(cur, fecha: str):
     cur.execute("SELECT id_tiempo FROM dw.dim_tiempo WHERE fecha = %s", (fecha,))
     row = cur.fetchone()
     return row[0] if row else None
 
 
-def obtener_id_canal(cur, tipo: str) -> int | None:
+def get_id_canal(cur, tipo: str):
     cur.execute("SELECT id_canal FROM dw.dim_canal WHERE tipo_canal = %s", (tipo,))
     row = cur.fetchone()
     return row[0] if row else None
 
 
-def obtener_id_tienda(cur, nombre, canal: str) -> int | None:
-    """
-    Retorna el id_tienda correspondiente.
-    - Ventas POS: busca por nombre de tienda física.
-    - Ventas online (web/app): usa la tienda 'Online' de dim_tienda.
-    Nunca retorna None — siempre habrá una tienda asignada.
-    """
+def get_id_tienda(cur, nombre):
     if not nombre or str(nombre) == "nan":
-        # Venta online — asignar tienda 'Online'
-        if canal in ("web", "app"):
-            cur.execute(
-                "SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = 'Online'"
-            )
-            row = cur.fetchone()
-            return row[0] if row else None
         return None
-    # Venta POS — buscar tienda física por nombre
-    cur.execute(
-        "SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s",
-        (str(nombre),)
-    )
+    cur.execute("SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s", (str(nombre),))
     row = cur.fetchone()
     return row[0] if row else None
 
 
-def obtener_id_producto(cur, id_producto) -> int | None:
-    """
-    Retorna el id_producto si existe en dim_producto.
-    Retorna None para ventas online (sin desglose por producto).
-    El campo id_producto_fk en fact_ventas admite NULL por diseño.
-    """
-    if pd.isna(id_producto):
+def get_id_producto(cur, id_prod):
+    if pd.isna(id_prod):
         return None
-    cur.execute(
-        "SELECT id_producto FROM dw.dim_producto WHERE id_producto = %s",
-        (int(id_producto),)
-    )
+    cur.execute("SELECT id_producto FROM dw.dim_producto WHERE id_producto = %s", (int(id_prod),))
     row = cur.fetchone()
     return row[0] if row else None
 
 
-# ── Tabla de hechos ──────────────────────────────────────────
-
-def cargar_fact_ventas(conn):
-    df = cargar_integrated("ventas_enriquecidas")
+def cargar_fact_ventas(conn, integrated_dir: str):
+    df = cargar_csv(integrated_dir, "ventas_enriquecidas.csv")
     if df is None:
-        _log("  fact_ventas — omitida (sin ventas enriquecidas)")
+        _log("  fact_ventas — omitida")
         return
 
     df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
@@ -215,33 +183,30 @@ def cargar_fact_ventas(conn):
 
     with conn.cursor() as cur:
         for _, row in df.iterrows():
-            id_tiempo   = obtener_id_tiempo(cur, str(row["fecha"]))
-            id_canal    = obtener_id_canal(cur, str(row["canal"]))
-            id_tienda   = obtener_id_tienda(cur, row.get("tienda"), str(row["canal"]))
-            id_producto = obtener_id_producto(cur, row.get("id_producto"))
+            id_tiempo   = get_id_tiempo(cur, str(row["fecha"]))
+            id_canal    = get_id_canal(cur, str(row["canal"]))
+            id_tienda   = get_id_tienda(cur, row.get("tienda"))
+            id_producto = get_id_producto(cur, row.get("id_producto"))
 
-            # Solo saltar si faltan tiempo o canal — tienda y producto pueden ser None
             if id_tiempo is None or id_canal is None:
                 omitidos += 1
-                _log(f"  [OMITIDA] Faltan claves obligatorias: "
-                     f"tiempo={id_tiempo} canal={id_canal}")
                 continue
 
             registros.append((
                 id_tiempo,
                 int(row["id_cliente"]),
-                id_producto,                    # NULL para ventas online — por diseño
+                id_producto,
                 id_canal,
-                id_tienda,                      # 'Online' para web/app
-                int(row["cantidad"])        if not pd.isna(row["cantidad"])        else 1,
-                float(row["precio_unitario"]) if not pd.isna(row["precio_unitario"]) else 0.0,
+                id_tienda,
+                int(row["cantidad"])          if not pd.isna(row["cantidad"])          else 1,
+                float(row["precio_unitario"]) if not pd.isna(row["precio_unitario"])   else 0.0,
                 float(row["total_venta"]),
                 str(row["fuente"]),
                 int(row["id_venta"])
             ))
 
     if not registros:
-        _log("  fact_ventas — sin registros válidos para cargar")
+        _log("  fact_ventas — sin registros validos")
         return
 
     sql = """
@@ -254,45 +219,41 @@ def cargar_fact_ventas(conn):
     with conn.cursor() as cur:
         execute_values(cur, sql, registros)
 
-    _log(f"  fact_ventas — {len(registros)} registros cargados"
-         + (f" ({omitidos} omitidos por claves faltantes)" if omitidos else ""))
+    msg = f"  fact_ventas — {len(registros)} registros cargados"
+    if omitidos:
+        msg += f" ({omitidos} omitidos)"
+    _log(msg)
 
 
 # ── Principal ────────────────────────────────────────────────
 
-def run():
+def run(fecha: str = None):
+    if fecha is None:
+        fecha = sys.argv[1] if len(sys.argv) > 1 else "sin_fecha"
+
+    integrated_dir  = get_integrated(fecha)
+    transformed_dir = get_transformed(fecha)
+
     _log("=" * 50)
-    _log("INICIO CARGA AL DATA WAREHOUSE")
+    _log(f"INICIO CARGA AL DATA WAREHOUSE — Fecha: {fecha}")
     _log("=" * 50)
 
     conn = conectar()
 
     try:
-        _log("")
-        _log(">> Limpiando tablas...")
-        with conn.cursor() as cur:
-            cur.execute("TRUNCATE dw.fact_ventas  RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_cliente  RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_producto RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_tiempo   RESTART IDENTITY CASCADE;")
-            cur.execute("TRUNCATE dw.dim_tienda   RESTART IDENTITY CASCADE;")
-        _log("  Tablas limpiadas")
+        _log("\n>> Cargando dimensiones:")
+        cargar_dim_cliente(conn,  transformed_dir)
+        cargar_dim_producto(conn, transformed_dir)
+        cargar_dim_tiempo(conn,   integrated_dir)
+        cargar_dim_tienda(conn,   transformed_dir)
 
-        _log("")
-        _log(">> Cargando dimensiones:")
-        cargar_dim_cliente(conn)
-        cargar_dim_producto(conn)
-        cargar_dim_tiempo(conn)
-        cargar_dim_tienda(conn)
-
-        _log("")
-        _log(">> Cargando tabla de hechos:")
-        cargar_fact_ventas(conn)
+        _log("\n>> Cargando tabla de hechos:")
+        cargar_fact_ventas(conn, integrated_dir)
 
         conn.commit()
         _log("")
         _log("=" * 50)
-        _log("CARGA COMPLETA — Datos disponibles en PostgreSQL")
+        _log(f"CARGA COMPLETA — Fecha: {fecha}")
         _log("=" * 50)
 
     except Exception as e:
@@ -301,7 +262,7 @@ def run():
         raise
     finally:
         conn.close()
-        _log("Conexión cerrada")
+        _log("Conexion cerrada")
 
 
 if __name__ == "__main__":

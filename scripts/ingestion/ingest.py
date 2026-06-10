@@ -1,11 +1,3 @@
-# ============================================================
-#  RetailStart Chile S.A. — Data Platform
-#  Archivo : scripts/ingestion/ingest.py
-#  Versión : 3.0 — con soporte de fecha como argumento
-#  Uso     : python ingest.py [fecha]
-#            fecha formato YYYY-MM-DD o "maestros"
-# ============================================================
-
 import os
 import sys
 import pandas as pd
@@ -15,56 +7,31 @@ from dotenv import load_dotenv
 
 load_dotenv(encoding="utf-8")
 
-BASE_DIR    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-RAW_CSV     = os.path.join(BASE_DIR, "data", "raw", "csv")
-RAW_JSON    = os.path.join(BASE_DIR, "data", "raw", "json")
-RAW_XML     = os.path.join(BASE_DIR, "data", "raw", "xml")
-RAW_TXT     = os.path.join(BASE_DIR, "data", "raw", "txt")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RAW_CSV  = os.path.join(BASE_DIR, "data", "raw", "csv")
+RAW_JSON = os.path.join(BASE_DIR, "data", "raw", "json")
+RAW_XML  = os.path.join(BASE_DIR, "data", "raw", "xml")
+RAW_TXT  = os.path.join(BASE_DIR, "data", "raw", "txt")
 
-CATALOGO = {
-    "csv":  ["ventas_pos.csv", "clientes_crm.csv", "productos_erp.csv",
-             "ventas_online.csv", "callcenter.csv", "proveedores.csv", "multimedia.csv"],
-    "json": ["eventos_app.json", "redes_sociales.json"],
-    "xml":  ["logistica.xml"],
-    "txt":  ["logs_sistema.txt"],
+DATASETS_FECHA   = ["ventas_pos", "ventas_online", "callcenter"]
+DATASETS_MAESTRO_CSV = ["clientes_crm", "productos_erp", "proveedores", "multimedia"]
+DATASETS_OTROS = {
+    "eventos_app":    ("json", RAW_JSON),
+    "redes_sociales": ("json", RAW_JSON),
+    "logistica":      ("xml",  RAW_XML),
+    "logs_sistema":   ("txt",  RAW_TXT),
 }
-
 
 def _log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-
-def get_cleaned_dir(fecha: str) -> str:
-    """Retorna la carpeta cleaned correspondiente a la fecha."""
+def cleaned_dir(fecha: str) -> str:
     ruta = os.path.join(BASE_DIR, "data", "processed", "cleaned", fecha)
     os.makedirs(ruta, exist_ok=True)
     return ruta
 
-
-def existe(carpeta: str, nombre: str) -> bool:
-    return os.path.isfile(os.path.join(carpeta, nombre))
-
-
-def leer_csv(nombre: str) -> pd.DataFrame | None:
-    if not existe(RAW_CSV, nombre):
-        return None
-    df = pd.read_csv(os.path.join(RAW_CSV, nombre))
-    _log(f"  CSV cargado: {nombre} — {len(df)} filas")
-    return df
-
-
-def leer_json(nombre: str) -> pd.DataFrame | None:
-    if not existe(RAW_JSON, nombre):
-        return None
-    df = pd.read_json(os.path.join(RAW_JSON, nombre))
-    _log(f"  JSON cargado: {nombre} — {len(df)} filas")
-    return df
-
-
-def leer_xml(nombre: str) -> pd.DataFrame | None:
-    if not existe(RAW_XML, nombre):
-        return None
-    tree = etree.parse(os.path.join(RAW_XML, nombre))
+def leer_xml(ruta: str) -> pd.DataFrame:
+    tree = etree.parse(ruta)
     root = tree.getroot()
     registros = []
     for pedido in root.findall("pedido"):
@@ -73,16 +40,11 @@ def leer_xml(nombre: str) -> pd.DataFrame | None:
             "id_cliente": int(pedido.find("cliente").text),
             "estado":     pedido.find("estado").text.strip()
         })
-    df = pd.DataFrame(registros)
-    _log(f"  XML cargado: {nombre} — {len(df)} filas")
-    return df
+    return pd.DataFrame(registros)
 
-
-def leer_txt(nombre: str) -> pd.DataFrame | None:
-    if not existe(RAW_TXT, nombre):
-        return None
+def leer_txt(ruta: str) -> pd.DataFrame:
     registros = []
-    with open(os.path.join(RAW_TXT, nombre), "r", encoding="utf-8") as f:
+    with open(ruta, "r", encoding="utf-8") as f:
         for linea in f:
             linea = linea.strip()
             if not linea:
@@ -94,82 +56,46 @@ def leer_txt(nombre: str) -> pd.DataFrame | None:
                 "accion":  partes[2] if len(partes) > 2 else None,
                 "detalle": partes[3] if len(partes) > 3 else None
             })
-    df = pd.DataFrame(registros)
-    _log(f"  TXT cargado: {nombre} — {len(df)} filas")
-    return df
-
-
-def guardar(df: pd.DataFrame, nombre: str, cleaned_dir: str):
-    ruta = os.path.join(cleaned_dir, nombre)
-    df.to_csv(ruta, index=False)
-    _log(f"  Guardado: {nombre} ({len(df)} filas)")
+    return pd.DataFrame(registros)
 
 
 def run(fecha: str = None):
     if fecha is None:
-        fecha = sys.argv[1] if len(sys.argv) > 1 else "sin_fecha"
+        fecha = sys.argv[1] if len(sys.argv) > 1 else "maestros"
 
-    cleaned_dir = get_cleaned_dir(fecha)
-
-    _log("=" * 50)
-    _log(f"INICIO INGESTA — Fecha: {fecha}")
-    _log("=" * 50)
-
+    cdir = cleaned_dir(fecha)
     datasets = {}
 
-    # CSV — leer desde raw/ y filtrar por fecha si aplica
-    _log("\n>> Archivos CSV:")
-    for nombre in CATALOGO["csv"]:
-        clave = nombre.replace(".csv", "")
-        # Intentar leer desde cleaned/FECHA/ (ya segmentado por watcher)
-        ruta_segmentada = os.path.join(cleaned_dir, nombre.replace(".csv", "_raw.csv"))
-        if os.path.isfile(ruta_segmentada):
-            df = pd.read_csv(ruta_segmentada)
-            _log(f"  CSV desde cleaned/{fecha}/: {nombre} — {len(df)} filas")
-            datasets[clave] = df
-        else:
-            # Si no hay segmentado, leer desde raw/ completo
-            df = leer_csv(nombre)
-            if df is not None:
-                # Filtrar por fecha si tiene columna fecha
-                if "fecha" in df.columns and fecha not in ("maestros", "sin_fecha"):
-                    df = df[pd.to_datetime(df["fecha"]).dt.strftime("%Y-%m-%d") == fecha]
-                    _log(f"    Filtrado por fecha {fecha}: {len(df)} filas")
-                if len(df) > 0:
-                    guardar(df, f"{clave}_raw.csv", cleaned_dir)
-                    datasets[clave] = df
+    if fecha == "maestros":
+        # Datasets maestros CSV — ya segmentados por watcher en cleaned/maestros/
+        for nombre in DATASETS_MAESTRO_CSV:
+            ruta = os.path.join(cdir, f"{nombre}_raw.csv")
+            if os.path.isfile(ruta):
+                df = pd.read_csv(ruta)
+                datasets[nombre] = df
 
-    # JSON
-    _log("\n>> Archivos JSON:")
-    for nombre in CATALOGO["json"]:
-        clave = nombre.replace(".json", "")
-        df = leer_json(nombre)
-        if df is not None:
-            guardar(df, f"{clave}_raw.csv", cleaned_dir)
-            datasets[clave] = df
+        # Datasets JSON/XML/TXT — leer directo desde raw/
+        for nombre, (formato, carpeta) in DATASETS_OTROS.items():
+            ruta = os.path.join(carpeta, f"{nombre}.{formato}")
+            if not os.path.isfile(ruta):
+                continue
+            if formato == "json":
+                df = pd.read_json(ruta)
+            elif formato == "xml":
+                df = leer_xml(ruta)
+            else:
+                df = leer_txt(ruta)
+            df.to_csv(os.path.join(cdir, f"{nombre}_raw.csv"), index=False)
+            datasets[nombre] = df
 
-    # XML
-    _log("\n>> Archivos XML:")
-    for nombre in CATALOGO["xml"]:
-        clave = nombre.replace(".xml", "")
-        df = leer_xml(nombre)
-        if df is not None:
-            guardar(df, f"{clave}_raw.csv", cleaned_dir)
-            datasets[clave] = df
+    else:
+        # Datasets de ventas — ya segmentados por watcher en cleaned/<fecha>/
+        for nombre in DATASETS_FECHA:
+            ruta = os.path.join(cdir, f"{nombre}_raw.csv")
+            if os.path.isfile(ruta):
+                datasets[nombre] = pd.read_csv(ruta)
 
-    # TXT
-    _log("\n>> Archivos TXT:")
-    for nombre in CATALOGO["txt"]:
-        clave = nombre.replace(".txt", "")
-        df = leer_txt(nombre)
-        if df is not None:
-            guardar(df, f"{clave}_raw.csv", cleaned_dir)
-            datasets[clave] = df
-
-    _log("")
-    _log("=" * 50)
-    _log(f"INGESTA COMPLETA — {len(datasets)} fuentes | Fecha: {fecha}")
-    _log("=" * 50)
+    _log(f">> Ingesta [{fecha}]: {len(datasets)} datasets ({', '.join(datasets.keys())})")
     return datasets
 
 

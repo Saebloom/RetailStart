@@ -1,9 +1,3 @@
-# ============================================================
-#  RetailStart Chile S.A. — Data Platform
-#  Archivo : scripts/analytics/visualize.py
-#  Etapa   : Visualización — integrated/ → dashboards/exports/
-# ============================================================
- 
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -14,16 +8,15 @@ from dotenv import load_dotenv
  
 load_dotenv()
  
-# ------------------------------------------------------------
 # Rutas base
-# ------------------------------------------------------------
+
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 INTEGRATED = os.path.join(BASE_DIR, "data", "processed", "integrated")
 EXPORTS    = os.path.join(BASE_DIR, "dashboards", "exports")
  
-# ------------------------------------------------------------
+
 # Estilo global
-# ------------------------------------------------------------
+
 sns.set_theme(style="whitegrid", palette="muted")
 COLORES = ["#534AB7", "#1D9E75", "#D85A30", "#EF9F27", "#378ADD", "#639922"]
  
@@ -48,10 +41,7 @@ def formato_pesos(valor, pos):
         return f"${valor/1_000:.0f}K"
     return f"${valor:.0f}"
  
- 
-# ============================================================
 #  GRÁFICO 1 — Mejores clientes por volumen de compra
-# ============================================================
  
 def grafico_mejores_clientes():
     _log(">> Generando gráfico: mejores clientes...")
@@ -97,10 +87,7 @@ def grafico_mejores_clientes():
     fig.tight_layout()
     guardar(fig, "01_mejores_clientes.png")
  
- 
-# ============================================================
 #  GRÁFICO 2 — Ventas por canal
-# ============================================================
  
 def grafico_ventas_por_canal():
     _log(">> Generando gráfico: ventas por canal...")
@@ -149,11 +136,8 @@ def grafico_ventas_por_canal():
                  fontsize=14, fontweight="bold", y=1.02)
     fig.tight_layout()
     guardar(fig, "02_ventas_por_canal.png")
- 
- 
-# ============================================================
+
 #  GRÁFICO 3 — Productos más vendidos
-# ============================================================
  
 def grafico_productos_mas_vendidos():
     _log(">> Generando gráfico: productos más vendidos...")
@@ -217,10 +201,7 @@ def grafico_productos_mas_vendidos():
     fig.tight_layout()
     guardar(fig, "03_productos_mas_vendidos.png")
  
- 
-# ============================================================
 #  GRÁFICO 4 — Ventas por categoría
-# ============================================================
  
 def grafico_ventas_por_categoria():
     _log(">> Generando gráfico: ventas por categoría...")
@@ -253,10 +234,7 @@ def grafico_ventas_por_categoria():
     fig.tight_layout()
     guardar(fig, "04_ventas_por_categoria.png")
  
- 
-# ============================================================
 #  GRÁFICO 5 — Evolución de ventas por fecha
-# ============================================================
  
 def grafico_evolucion_ventas():
     _log(">> Generando gráfico: evolución de ventas...")
@@ -284,10 +262,7 @@ def grafico_evolucion_ventas():
     fig.tight_layout()
     guardar(fig, "05_evolucion_ventas.png")
  
- 
-# ============================================================
 #  FUNCIÓN PRINCIPAL
-# ============================================================
  
 def run():
     _log("=" * 50)
@@ -305,9 +280,5 @@ def run():
     _log(f"VISUALIZACIONES COMPLETAS — guardadas en dashboards/exports/")
     _log("=" * 50)
  
- 
-# ============================================================
-#  Ejecución directa
-# ============================================================
 if __name__ == "__main__":
     run()

@@ -1,24 +1,11 @@
--- ============================================================
---  RetailStart Chile S.A. — Data Warehouse
---  Modelo Estrella
---  Archivo : database/sql/create_tables.sql
---  Motor   : PostgreSQL (pgAdmin / Supabase)
--- ============================================================
-
--- ------------------------------------------------------------
--- 0. Schema propio para el DW
--- ------------------------------------------------------------
+-- Schema propio para el DW
 CREATE SCHEMA IF NOT EXISTS dw;
 SET search_path TO dw;
 
+--  DIMENSIONES --
 
--- ============================================================
---  DIMENSIONES
--- ============================================================
-
--- ------------------------------------------------------------
 -- dim_tiempo
--- ------------------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS dw.dim_tiempo (
     id_tiempo       SERIAL          PRIMARY KEY,
     fecha           DATE            NOT NULL UNIQUE,
@@ -33,9 +20,8 @@ COMMENT ON TABLE  dw.dim_tiempo          IS 'Dimensión de tiempo — granularid
 COMMENT ON COLUMN dw.dim_tiempo.es_finde IS 'TRUE si el día es sábado o domingo';
 
 
--- ------------------------------------------------------------
 -- dim_cliente
--- ------------------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS dw.dim_cliente (
     id_cliente      SERIAL          PRIMARY KEY,
     nombre          VARCHAR(100)    NOT NULL,
@@ -49,9 +35,8 @@ COMMENT ON TABLE  dw.dim_cliente          IS 'Dimensión de clientes — fuente:
 COMMENT ON COLUMN dw.dim_cliente.segmento IS 'Premium | Regular | Nuevo';
 
 
--- ------------------------------------------------------------
 -- dim_producto
--- ------------------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS dw.dim_producto (
     id_producto     SERIAL          PRIMARY KEY,
     nombre_producto VARCHAR(150)    NOT NULL,
@@ -64,9 +49,8 @@ COMMENT ON TABLE  dw.dim_producto           IS 'Dimensión de productos — fuen
 COMMENT ON COLUMN dw.dim_producto.categoria IS 'Tecnologia | Vestuario | Hogar';
 
 
--- ------------------------------------------------------------
 -- dim_canal
--- ------------------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS dw.dim_canal (
     id_canal        SERIAL          PRIMARY KEY,
     tipo_canal      VARCHAR(20)     NOT NULL,
@@ -83,9 +67,8 @@ INSERT INTO dw.dim_canal (tipo_canal, descripcion) VALUES
 ON CONFLICT DO NOTHING;
 
 
--- ------------------------------------------------------------
 -- dim_tienda
--- ------------------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS dw.dim_tienda (
     id_tienda       SERIAL          PRIMARY KEY,
     nombre_tienda   VARCHAR(150)    NOT NULL,
@@ -107,27 +90,19 @@ INSERT INTO dw.dim_tienda (nombre_tienda, ciudad, region) VALUES
 ON CONFLICT DO NOTHING;
 
 
--- ============================================================
 --  TABLA DE HECHOS
--- ============================================================
 
--- ------------------------------------------------------------
 -- fact_ventas
--- Consolida ventas_pos + ventas_online
--- id_producto_fk admite NULL para ventas online (sin desglose
--- por producto — el dataset solo trae el total del pedido)
--- id_tienda_fk nunca es NULL: ventas online usan la tienda
--- 'Online' de dim_tienda
--- ------------------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS dw.fact_ventas (
     id_venta            SERIAL          PRIMARY KEY,
 
     -- Claves foráneas
     id_tiempo_fk        INT             NOT NULL REFERENCES dw.dim_tiempo(id_tiempo),
     id_cliente_fk       INT             NOT NULL REFERENCES dw.dim_cliente(id_cliente),
-    id_producto_fk      INT                      REFERENCES dw.dim_producto(id_producto),  -- NULL para ventas online
+    id_producto_fk      INT                      REFERENCES dw.dim_producto(id_producto),
     id_canal_fk         INT             NOT NULL REFERENCES dw.dim_canal(id_canal),
-    id_tienda_fk        INT                      REFERENCES dw.dim_tienda(id_tienda),       -- NULL para ventas online
+    id_tienda_fk        INT                      REFERENCES dw.dim_tienda(id_tienda),
 
     -- Métricas
     cantidad            SMALLINT        NOT NULL DEFAULT 1,
@@ -146,9 +121,8 @@ COMMENT ON COLUMN dw.fact_ventas.id_producto_fk IS 'NULL cuando la venta es onli
 COMMENT ON COLUMN dw.fact_ventas.id_tienda_fk   IS 'NULL para ventas online (sin tienda fisica asociada)';
 
 
--- ============================================================
 --  ÍNDICES
--- ============================================================
+
 CREATE INDEX IF NOT EXISTS idx_fv_tiempo   ON dw.fact_ventas(id_tiempo_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_cliente  ON dw.fact_ventas(id_cliente_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_producto ON dw.fact_ventas(id_producto_fk);
@@ -156,7 +130,13 @@ CREATE INDEX IF NOT EXISTS idx_fv_canal    ON dw.fact_ventas(id_canal_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_tienda   ON dw.fact_ventas(id_tienda_fk);
 CREATE INDEX IF NOT EXISTS idx_fv_fuente   ON dw.fact_ventas(fuente);
 
-
--- ============================================================
---  FIN DEL SCRIPT
--- ============================================================
+-- Evita duplicados si el pipeline se re-ejecuta para la misma fecha
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_fact_ventas_origen'
+    ) THEN
+        ALTER TABLE dw.fact_ventas
+            ADD CONSTRAINT uq_fact_ventas_origen UNIQUE (fuente, id_origen);
+    END IF;
+END $$;

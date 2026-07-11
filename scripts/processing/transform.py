@@ -20,7 +20,6 @@ def get_dir(zona: str, fecha: str) -> str:
 
 
 def cargar(nombre: str, fecha_dir: str, maestros_dir: str) -> pd.DataFrame | None:
-    """Busca primero en la carpeta de la fecha, luego en maestros/."""
     for carpeta in (fecha_dir, maestros_dir):
         ruta = os.path.join(carpeta, f"{nombre}_clean.csv")
         if os.path.isfile(ruta):
@@ -36,24 +35,29 @@ def consolidar_ventas(fecha_dir: str) -> pd.DataFrame | None:
         return None
 
     partes = []
+
     if pos is not None:
         std = pos[["id_venta", "fecha", "id_cliente", "id_producto",
                    "cantidad", "precio_unitario", "total_venta", "fuente"]].copy()
         std["canal"]  = "tienda_fisica"
         std["tienda"] = pos["tienda"]
         partes.append(std)
+        _log(f"  ventas_pos: {len(pos)} registros")
 
     if online is not None:
         std = online[["id_venta", "fecha", "id_cliente",
-                      "total_venta", "canal", "fuente"]].copy()
-        std["id_producto"]     = None
+                      "id_producto", "total_venta", "canal", "fuente"]].copy()
+        # ventas online: cantidad = 1, precio_unitario = total (no viene desglosado)
         std["cantidad"]        = 1
         std["precio_unitario"] = std["total_venta"]
         std["tienda"]          = None
         partes.append(std)
+        _log(f"  ventas_online: {len(online)} registros")
 
     ventas = pd.concat(partes, ignore_index=True)
     ventas["fecha"] = pd.to_datetime(ventas["fecha"])
+
+    # Normalizar id_producto a float para compatibilidad en merge
     ventas["id_producto"] = pd.to_numeric(ventas["id_producto"], errors="coerce")
 
     return ventas.sort_values("fecha").reset_index(drop=True)
@@ -68,14 +72,17 @@ def enriquecer(ventas: pd.DataFrame, fecha_dir: str, maestros_dir: str) -> pd.Da
             clientes[["id_cliente", "nombre", "apellido", "segmento", "ciudad"]],
             on="id_cliente", how="left"
         )
+        _log("  Enriquecido con clientes")
 
     if productos is not None:
         ventas = ventas.merge(
             productos[["id_producto", "nombre_producto", "categoria"]],
             on="id_producto", how="left"
         )
+        _log("  Enriquecido con productos")
 
     return ventas
+
 
 def metrica_clientes(v):
     extra = [c for c in ["nombre", "apellido", "segmento", "ciudad"] if c in v.columns]
@@ -127,16 +134,18 @@ def run(fecha: str = None):
         fecha = sys.argv[1] if len(sys.argv) > 1 else "maestros"
 
     if fecha == "maestros":
-        _log(">> Procesamiento [maestros]: sin ventas que consolidar — omitido")
+        _log(">> Procesamiento [maestros]: sin ventas — omitido")
         return {}
 
-    fecha_dir    = get_dir("transformed", fecha)
-    maestros_dir = get_dir("transformed", "maestros")
-    integrated_dir = get_dir("integrated", fecha)
+    fecha_dir      = get_dir("transformed", fecha)
+    maestros_dir   = get_dir("transformed", "maestros")
+    integrated_dir = get_dir("integrated",  fecha)
 
+    _log(f">> Consolidando ventas [{fecha}]...")
     ventas = consolidar_ventas(fecha_dir)
+
     if ventas is None:
-        _log(f">> Procesamiento [{fecha}]: sin datos de ventas — omitido")
+        _log(f">> Sin datos de ventas [{fecha}] — omitido")
         return {}
 
     ventas_enriq = enriquecer(ventas, fecha_dir, maestros_dir)
@@ -153,14 +162,17 @@ def run(fecha: str = None):
         "metricas_categoria": metrica_categoria(ventas_enriq),
         "metricas_fecha":     metrica_fecha(ventas_enriq),
     }
+
     for nombre, df in metricas.items():
         if df is not None and len(df) > 0:
             resultados[nombre] = df
+        else:
+            _log(f"  Omitida: {nombre} (datos insuficientes)")
 
     for nombre, df in resultados.items():
         df.to_csv(os.path.join(integrated_dir, f"{nombre}.csv"), index=False)
 
-    _log(f">> Procesamiento [{fecha}]: {len(resultados)} datasets generados ({len(ventas)} ventas)")
+    _log(f">> Procesamiento [{fecha}]: {len(resultados)} datasets — {len(ventas)} ventas")
     return resultados
 
 

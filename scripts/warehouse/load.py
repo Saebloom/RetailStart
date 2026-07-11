@@ -10,6 +10,7 @@ load_dotenv(encoding="utf-8")
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
 def _log(msg: str):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
@@ -22,6 +23,7 @@ def cargar_csv(carpeta: str, nombre: str) -> pd.DataFrame | None:
     ruta = os.path.join(carpeta, nombre)
     return pd.read_csv(ruta) if os.path.isfile(ruta) else None
 
+
 def conectar():
     conn = psycopg2.connect(
         host     = os.getenv("DB_HOST",     "localhost"),
@@ -33,7 +35,8 @@ def conectar():
     conn.autocommit = False
     return conn
 
-# Maestros
+
+# ── Dimensiones ──────────────────────────────────────────────
 
 def cargar_dim_cliente(conn, mdir: str) -> int:
     df = cargar_csv(mdir, "clientes_crm_clean.csv")
@@ -82,20 +85,20 @@ def cargar_dim_producto(conn, mdir: str) -> int:
     return len(registros)
 
 
-# Por fecha
-
 def cargar_dim_tiempo(conn, idir: str) -> int:
     df = cargar_csv(idir, "ventas_consolidadas.csv")
     if df is None:
         return 0
     df["fecha"] = pd.to_datetime(df["fecha"])
-    dias = {0:"Lunes",1:"Martes",2:"Miercoles",3:"Jueves",
-            4:"Viernes",5:"Sabado",6:"Domingo"}
+    dias = {0:"Lunes", 1:"Martes", 2:"Miercoles", 3:"Jueves",
+            4:"Viernes", 5:"Sabado", 6:"Domingo"}
     registros = []
     for fecha in df["fecha"].dt.date.unique():
         dt = pd.Timestamp(fecha)
-        registros.append((str(fecha), int(dt.day), int(dt.month),
-                          int(dt.year), dias[dt.dayofweek], dt.dayofweek >= 5))
+        registros.append((
+            str(fecha), int(dt.day), int(dt.month),
+            int(dt.year), dias[dt.dayofweek], dt.dayofweek >= 5
+        ))
     sql = """
         INSERT INTO dw.dim_tiempo (fecha, dia, mes, anio, dia_semana, es_finde)
         VALUES %s ON CONFLICT (fecha) DO NOTHING;
@@ -120,32 +123,56 @@ def cargar_dim_tienda(conn, fdir: str) -> int:
     return len(registros)
 
 
-def get_id_tiempo(cur, fecha):
+# ── Helpers fact_ventas ──────────────────────────────────────
+
+def get_id_tiempo(cur, fecha: str):
     cur.execute("SELECT id_tiempo FROM dw.dim_tiempo WHERE fecha = %s", (fecha,))
     row = cur.fetchone()
     return row[0] if row else None
 
-def get_id_canal(cur, tipo):
+
+def get_id_canal(cur, tipo: str):
     cur.execute("SELECT id_canal FROM dw.dim_canal WHERE tipo_canal = %s", (tipo,))
     row = cur.fetchone()
     return row[0] if row else None
 
-def get_id_tienda(cur, nombre):
+
+def get_id_tienda(cur, nombre, canal: str):
+    """
+    Retorna id_tienda siempre con valor:
+    - Ventas POS  -> busca la tienda fisica por nombre
+    - Ventas online (web/app) -> asigna la tienda 'Online'
+    """
     if not nombre or str(nombre) == "nan":
+        # Venta online: asignar tienda Online
+        if canal in ("web", "app"):
+            cur.execute(
+                "SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = 'Online'"
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
         return None
-    cur.execute("SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s", (str(nombre),))
+    # Venta POS: buscar por nombre de tienda fisica
+    cur.execute(
+        "SELECT id_tienda FROM dw.dim_tienda WHERE nombre_tienda = %s",
+        (str(nombre),)
+    )
     row = cur.fetchone()
     return row[0] if row else None
+
 
 def get_id_producto(cur, id_prod):
     if pd.isna(id_prod):
         return None
-    cur.execute("SELECT id_producto FROM dw.dim_producto WHERE id_producto = %s", (int(id_prod),))
+    cur.execute(
+        "SELECT id_producto FROM dw.dim_producto WHERE id_producto = %s",
+        (int(id_prod),)
+    )
     row = cur.fetchone()
     return row[0] if row else None
 
 
-def cargar_fact_ventas(conn, idir: str) -> tuple[int, int]:
+def cargar_fact_ventas(conn, idir: str, fdir: str) -> tuple[int, int]:
     df = cargar_csv(idir, "ventas_enriquecidas.csv")
     if df is None:
         return 0, 0
@@ -155,20 +182,29 @@ def cargar_fact_ventas(conn, idir: str) -> tuple[int, int]:
 
     with conn.cursor() as cur:
         for _, row in df.iterrows():
+            canal       = str(row["canal"])
             id_tiempo   = get_id_tiempo(cur, str(row["fecha"]))
-            id_canal    = get_id_canal(cur, str(row["canal"]))
-            id_tienda   = get_id_tienda(cur, row.get("tienda"))
+            id_canal    = get_id_canal(cur, canal)
+            id_tienda   = get_id_tienda(cur, row.get("tienda"), canal)
             id_producto = get_id_producto(cur, row.get("id_producto"))
 
-            if id_tiempo is None or id_canal is None:
+            # Solo se omite si faltan tiempo o canal — tienda y producto siempre deben tener valor
+            if id_tiempo is None or id_canal is None or id_tienda is None:
                 omitidos += 1
+                _log(f"  [OMITIDA] tiempo={id_tiempo} canal={id_canal} tienda={id_tienda}")
                 continue
 
             registros.append((
-                id_tiempo, int(row["id_cliente"]), id_producto, id_canal, id_tienda,
+                id_tiempo,
+                int(row["id_cliente"]),
+                id_producto,
+                id_canal,
+                id_tienda,
                 int(row["cantidad"])          if not pd.isna(row["cantidad"])        else 1,
                 float(row["precio_unitario"]) if not pd.isna(row["precio_unitario"]) else 0.0,
-                float(row["total_venta"]), str(row["fuente"]), int(row["id_venta"])
+                float(row["total_venta"]),
+                str(row["fuente"]),
+                int(row["id_venta"])
             ))
 
     if not registros:
@@ -188,7 +224,7 @@ def cargar_fact_ventas(conn, idir: str) -> tuple[int, int]:
     return len(registros), omitidos
 
 
-# Principal
+# ── Principal ────────────────────────────────────────────────
 
 def run(fecha: str = None):
     if fecha is None:
@@ -198,7 +234,7 @@ def run(fecha: str = None):
 
     try:
         if fecha == "maestros":
-            mdir = get_dir("transformed", "maestros")
+            mdir   = get_dir("transformed", "maestros")
             n_cli  = cargar_dim_cliente(conn, mdir)
             n_prod = cargar_dim_producto(conn, mdir)
             conn.commit()
@@ -208,9 +244,9 @@ def run(fecha: str = None):
             fdir = get_dir("transformed", fecha)
             idir = get_dir("integrated",  fecha)
 
-            n_tiempo  = cargar_dim_tiempo(conn, idir)
-            n_tienda  = cargar_dim_tienda(conn, fdir)
-            n_fact, n_omit = cargar_fact_ventas(conn, idir)
+            n_tiempo        = cargar_dim_tiempo(conn, idir)
+            n_tienda        = cargar_dim_tienda(conn, fdir)
+            n_fact, n_omit  = cargar_fact_ventas(conn, idir, fdir)
             conn.commit()
 
             msg = f">> Carga [{fecha}]: fechas={n_tiempo} tiendas={n_tienda} ventas={n_fact}"
